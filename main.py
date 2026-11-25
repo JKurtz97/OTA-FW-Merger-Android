@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.8"
 APP_PUBLISHER = "JKurtz"
 APP_PACKAGE = "com.jkurtz.otafwmerger"
 REQUIRED_HYBRID_IMGS = ("my_company.img", "my_preload.img", "system_dlkm_oki.img")
@@ -1208,6 +1208,7 @@ class OtaCheckWorker(QThread):
 
 
 
+
 DEFAULT_LOGICAL_PARTITIONS = {
     "system", "system_ext", "product", "vendor", "odm",
     "system_dlkm", "system_dlkm_oki", "system_dlkm_gki", "vendor_dlkm", "odm_dlkm",
@@ -1421,7 +1422,7 @@ def detect_hybrid_zip(path: str):
                     parent = parts[-2].upper()
                     if parent == "OOS_FILES_HERE":
                         oos_imgs.append(parts[-1])
-                    elif parent == "COS_FILES_HERE":
+                    elif parent in ("OS_FILES_HERE", "COS_FILES_HERE"):
                         cos_imgs.append(parts[-1])
             if cos_imgs:
                 meta = extract_ota_zip_metadata(zf)
@@ -1443,7 +1444,7 @@ def is_regional_hybrid_zip(path: str):
     return (mode == "regional"), reqs
 
 
-def build_universal_update_binary(files_dir: str = "COS_FILES_HERE", label: str = "SuperHybrid") -> str:
+def build_universal_update_binary(files_dir: str = "OS_FILES_HERE", label: str = "MergedOTAFlasher") -> str:
     tpl = r"""#!/sbin/sh
 # __LABEL__ Universal ColorOS / OxygenOS Custom Recovery Flasher
 # Supports Aera & OrangeFox recoveries on any ColorOS / OxygenOS device (Snapdragon & MediaTek)
@@ -1680,6 +1681,8 @@ if [ -n "$STAGED_LOGICAL" ]; then
         HW="$(getprop ro.hardware 2>/dev/null)"
         if [ -e "/dev/block/by-name/lk_a" ] || echo "$HW" | grep -qi "^mt"; then
             GROUP_BASE="main"
+        elif echo "$HW" | grep -qiE "^(gs|zuma|komodo|caiman|tokay|shiba|husky|panther|cheetah|oriole|raven|tensor)"; then
+            GROUP_BASE="google_dynamic_partitions"
         else
             GROUP_BASE="qti_dynamic_partitions"
         fi
@@ -1728,7 +1731,7 @@ exit 0
     return tpl.replace("__FILES_DIR__", files_dir).replace("__LABEL__", label)
 
 
-def build_universal_fastboot_sh(phys_early, phys_other, logical_parts, meta, files_dir="COS_FILES_HERE", label="SuperHybrid") -> str:
+def build_universal_fastboot_sh(phys_early, phys_other, logical_parts, meta, files_dir="OS_FILES_HERE", label="MergedOTAFlasher") -> str:
     dev = meta.get("model") or meta.get("device") or "Universal ColorOS / OxygenOS"
     ver = meta.get("ota_version") or ""
     lines = [
@@ -1750,6 +1753,7 @@ def build_universal_fastboot_sh(phys_early, phys_other, logical_parts, meta, fil
         'echo ">>> Rebooting to fastbootd..."',
         '"$FASTBOOT" reboot fastboot',
         'read -rp "Once in fastbootd, press Enter to continue..." _',
+        '"$FASTBOOT" snapshot-update cancel || true',
         "",
     ]
     for p in phys_other:
@@ -1775,7 +1779,7 @@ def build_universal_fastboot_sh(phys_early, phys_other, logical_parts, meta, fil
     return "\n".join(lines)
 
 
-def build_universal_fastboot_bat(phys_early, phys_other, logical_parts, meta, files_dir="COS_FILES_HERE", label="SuperHybrid") -> str:
+def build_universal_fastboot_bat(phys_early, phys_other, logical_parts, meta, files_dir="OS_FILES_HERE", label="MergedOTAFlasher") -> str:
     dev = meta.get("model") or meta.get("device") or "Universal ColorOS / OxygenOS"
     lines = [
         "@echo off",
@@ -1793,6 +1797,7 @@ def build_universal_fastboot_bat(phys_early, phys_other, logical_parts, meta, fi
         "echo Rebooting to fastbootd...",
         "%fastboot% reboot fastboot",
         "pause",
+        "%fastboot% snapshot-update cancel",
         "",
     ]
     for p in phys_other:
@@ -2089,6 +2094,7 @@ class DumpWorker(QThread):
 
 
 
+
     def _su_read(self, cmd: str) -> str:
         proc = subprocess.run(["su", "-c", cmd], capture_output=True, text=True)
         return (proc.stdout or "").strip()
@@ -2317,10 +2323,10 @@ class DumpWorker(QThread):
         self._probe_device_meta_root()
 
         is_regional = (mode == "regional")
-        files_dir = "OOS_FILES_HERE" if is_regional else "COS_FILES_HERE"
-        label = "RegionalHybrid" if is_regional else "SuperHybrid"
-        sh_name = "Regional_Flasher.sh" if is_regional else "SuperHybrid_Flasher.sh"
-        bat_name = "Regional_Flasher.bat" if is_regional else "SuperHybrid_Flasher.bat"
+        files_dir = "OOS_FILES_HERE" if is_regional else "OS_FILES_HERE"
+        label = "RegionalHybrid" if is_regional else "MergedOTAFlasher"
+        sh_name = "Regional_Flasher.sh" if is_regional else "MergedOTAFlasher.sh"
+        bat_name = "Regional_Flasher.bat" if is_regional else "MergedOTAFlasher.bat"
 
         # If RegionalHybrid mode has explicit overrides (e.g. my_company/my_preload/system_dlkm_oki), stage them
         override_map = {}
@@ -2517,6 +2523,12 @@ class DumpWorker(QThread):
                 shutil.rmtree(meta_dir, ignore_errors=True)
                 with zipfile.ZipFile(ota_zip, "r") as zf:
                     tag, ota_ver = self._read_zip_meta(zf)
+                    inc_m = extract_ota_zip_metadata(zf)
+                    for mk in ("device", "fingerprint", "ota_version", "super_group", "logical_partitions"):
+                        if inc_m.get(mk) and not self.ota_meta.get(mk):
+                            self.ota_meta[mk] = inc_m[mk]
+                    if ota_ver:
+                        self.ota_meta["ota_version"] = ota_ver
                     inc_m = extract_ota_zip_metadata(zf)
                     for mk in ("device", "fingerprint", "ota_version", "super_group", "logical_partitions"):
                         if inc_m.get(mk) and not self.ota_meta.get(mk):

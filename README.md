@@ -1,6 +1,6 @@
 # OTA FW Merger (Android)
 
-**Version:** 1.7.1  
+**Version:** 1.8  
 **Publisher:** JKurtz  
 **Platform:** Android 9+ (`arm64-v8a`)  
 **License:** GNU GPL-3.0
@@ -13,11 +13,11 @@ A standalone, self-contained Android APK port inspired by [koaaN/OTAFirmwareMerg
 
 ---
 
-## Features (v1.7.1)
+## Features (v1.8)
 
 - **Full + Incremental OTA Merging:** Supports Full OTA URLs/ZIPs, pre-extracted Full OTA folders, existing RegionalHybrid / SuperHybrid base ZIPs, and chained Incremental OTA ZIPs/URLs.
 - **Universal ColorOS & OxygenOS Custom Recovery Flashable ZIPs:**
-  - **RegionalHybrid (`OOS_FILES_HERE`)** and **SuperHybrid (`COS_FILES_HERE`)** modes — both generate dynamic universal `META-INF/com/google/android/update-binary` recovery flashers (for **Aera** and **OrangeFox** recovery) plus companion PC `fastboot`/`fastbootd` scripts (`Regional_Flasher.sh`/`.bat` or `SuperHybrid_Flasher.sh`/`.bat`).
+  - **RegionalHybrid (`OOS_FILES_HERE`)** and **MergedOTAFlasher (`OS_FILES_HERE`)** modes — both generate dynamic universal `META-INF/com/google/android/update-binary` recovery flashers (for **Aera** and **OrangeFox** recovery) plus companion PC `fastboot`/`fastbootd` scripts (`Regional_Flasher.sh`/`.bat` or `MergedOTAFlasher.sh`/`.bat`).
   - Live root device metadata probing (`ro.product.model`, `ro.product.device`, `ro.board.platform`, `super` dynamic partition group, and raw `/dev/block/mapper/` logical partitions) with initial OTA ZIP metadata priority.
   - Built-in **4 pre-flight safety guards** before touching disk: recovery tool check (`lpmake`, `simg2img`, `blockdev`, `unzip`), `/sdcard` free-space check, per-partition block-size bounds check, and core `super` completeness check (`--virtual-ab` enabled).
   - **Auto-Pull All 3 From Device (Root):** One-tap root pull for `my_company.img`, `my_preload.img`, and `system_dlkm_oki.img` in RegionalHybrid mode.
@@ -31,7 +31,7 @@ A standalone, self-contained Android APK port inspired by [koaaN/OTAFirmwareMerg
 
 ## Installation & Permissions
 
-1. Download `OTAFWMerger-v1.7.1-JKurtz-arm64-v8a.apk` from **Releases** and install it.
+1. Download `OTAFWMerger-v1.8-JKurtz-arm64-v8a.apk` from **Releases** and install it.
 2. Grant **All files access (`MANAGE_EXTERNAL_STORAGE`)**:
    - **Settings -> Apps -> Special app access -> All files access -> OTA FW Merger -> Allow**
    - Or via rooted Termux / ADB:
