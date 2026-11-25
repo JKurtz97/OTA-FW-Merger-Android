@@ -1,0 +1,17 @@
+.buildozer/
+bin/
+__pycache__/
+*.pyc
+*.apk
+*.aab
+*.whl
+libs/
+template/
+output/
+ota/
+ota_new/
+repack_out/
+hybrid_preserved/
+pulled_regional_imgs/
+release_info.txt
+*.log
