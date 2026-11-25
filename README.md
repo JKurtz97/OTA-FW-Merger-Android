@@ -1,6 +1,6 @@
 # OTA FW Merger (Android)
 
-**Version:** 1.6  
+**Version:** 1.7.1  
 **Publisher:** JKurtz  
 **Platform:** Android 9+ (`arm64-v8a`)  
 **License:** GNU GPL-3.0
@@ -13,7 +13,7 @@ A standalone, self-contained Android APK port inspired by [koaaN/OTAFirmwareMerg
 
 ---
 
-## Features (v1.6)
+## Features (v1.7.1)
 
 - **Full + Incremental OTA Merging:** Supports Full OTA URLs/ZIPs, pre-extracted Full OTA folders, existing RegionalHybrid / SuperHybrid base ZIPs, and chained Incremental OTA ZIPs/URLs.
 - **Universal ColorOS & OxygenOS Custom Recovery Flashable ZIPs:**
@@ -31,7 +31,7 @@ A standalone, self-contained Android APK port inspired by [koaaN/OTAFirmwareMerg
 
 ## Installation & Permissions
 
-1. Download `OTAFWMerger-v1.6-JKurtz-arm64-v8a.apk` from **Releases** and install it.
+1. Download `OTAFWMerger-v1.7.1-JKurtz-arm64-v8a.apk` from **Releases** and install it.
 2. Grant **All files access (`MANAGE_EXTERNAL_STORAGE`)**:
    - **Settings -> Apps -> Special app access -> All files access -> OTA FW Merger -> Allow**
    - Or via rooted Termux / ADB:

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "1.6"
+APP_VERSION = "1.7.1"
 APP_PUBLISHER = "JKurtz"
 APP_PACKAGE = "com.jkurtz.otafwmerger"
 REQUIRED_HYBRID_IMGS = ("my_company.img", "my_preload.img", "system_dlkm_oki.img")
@@ -213,8 +213,9 @@ QLabel#TileSub {{
 QLabel#StatusChip {{
     background-color: {t["primary_container"]};
     color: {t["on_primary_container"]};
-    border-radius: 14px;
-    padding: 5px 14px;
+    border-radius: 13px;
+    padding: 3px 14px;
+    min-height: 24px;
     font-size: 12px;
     font-weight: 600;
 }}
@@ -243,11 +244,11 @@ QPushButton {{
     background-color: {t["surface_container_high"]};
     color: {t["on_surface"]};
     border: none;
-    border-radius: 22px;
-    padding: 10px 14px;
+    border-radius: 19px;
+    padding: 6px 16px;
     font-size: 13px;
     font-weight: 600;
-    min-height: 20px;
+    min-height: 32px;
 }}
 QPushButton:pressed {{
     background-color: {t["surface_pressed"]};
@@ -255,10 +256,12 @@ QPushButton:pressed {{
 QPushButton#PrimaryBtn {{
     background-color: {t["primary"]};
     color: {t["on_primary"]};
-    border-radius: 24px;
-    padding: 13px 20px;
+    border: none;
+    border-radius: 22px;
+    padding: 8px 20px;
     font-size: 15px;
     font-weight: 700;
+    min-height: 36px;
 }}
 QPushButton#PrimaryBtn:pressed {{
     background-color: {t["primary_pressed"]};
@@ -517,9 +520,21 @@ def rsa_sign_sha256_digest(pem_path: str, digest_bytes: bytes) -> bytes:
 class PickerRowDelegate(QStyledItemDelegate):
     def __init__(self, parent=None, accent_hex="#D32F2F", outline_hex="#6E6668", text_hex="#F4EFF0"):
         super().__init__(parent)
+        self._view = parent
         self.accent = QColor(accent_hex)
         self.outline = QColor(outline_hex)
         self.text_col = QColor(text_hex)
+        self._phase = 0
+        self._has_overflow = False
+        self._marquee_timer = QTimer(self)
+        self._marquee_timer.setInterval(33)
+        self._marquee_timer.timeout.connect(self._tick_marquee)
+        self._marquee_timer.start()
+
+    def _tick_marquee(self):
+        if self._view is not None and self._view.isVisible() and self._has_overflow:
+            self._phase += 1
+            self._view.viewport().update()
 
     def paint(self, painter, option, index):
         painter.save()
@@ -527,21 +542,41 @@ class PickerRowDelegate(QStyledItemDelegate):
         r = option.rect
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
 
-        # Subtle row highlight when checked
         if selected:
             bg = QColor(self.accent)
             bg.setAlpha(45)
             painter.setBrush(bg)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(r.adjusted(4, 2, -4, -2), 12, 12)
+            painter.drawRoundedRect(r.adjusted(4, 2, -4, -2), 14, 14)
 
-        # Row label on left (leave room for right-side checkbox)
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
         painter.setPen(self.text_col)
         text_rect = r.adjusted(14, 0, -68, 0)
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+        tw = painter.fontMetrics().horizontalAdvance(text)
+        overflow = tw - text_rect.width()
+        if overflow > 2:
+            self._has_overflow = True
+            pause = 28
+            speed = 1.4
+            travel = max(1, int(overflow / speed))
+            cycle = pause + travel + pause + travel
+            t = self._phase % cycle
+            if t < pause:
+                dx = 0
+            elif t < pause + travel:
+                dx = min(overflow, int((t - pause) * speed))
+            elif t < pause + travel + pause:
+                dx = overflow
+            else:
+                dx = max(0, int(overflow - (t - pause - travel - pause) * speed))
+            painter.save()
+            painter.setClipRect(text_rect)
+            draw_rect = text_rect.adjusted(-dx, 0, overflow + 12, 0)
+            painter.drawText(draw_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+            painter.restore()
+        else:
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
 
-        # Right-side M3 checkbox (only for real dir/file rows)
         udata = index.data(Qt.ItemDataRole.UserRole)
         if isinstance(udata, tuple) and len(udata) >= 2:
             box_sz = 24
@@ -562,7 +597,6 @@ class PickerRowDelegate(QStyledItemDelegate):
                 painter.drawRoundedRect(box_rect, 6, 6)
 
         painter.restore()
-
 
 class TouchScrollFilter(QObject):
     def __init__(self, scroll_widget, tap_callback=None):
@@ -1111,7 +1145,7 @@ class OtaCheckWorker(QThread):
             force_latest = bool(self.state.get("force_latest", False))
 
             if root_cap:
-                self.log.emit("\n=== Capturing System Update URLs via Root (Magisk / KSU Next) ===\n")
+                self.log.emit("\n=== Capturing System Update URLs via Root ===\n")
                 urls, raw = capture_system_update_urls_root()
                 if urls:
                     for u in urls:
@@ -1173,9 +1207,10 @@ class OtaCheckWorker(QThread):
 
 
 
+
 DEFAULT_LOGICAL_PARTITIONS = {
     "system", "system_ext", "product", "vendor", "odm",
-    "system_dlkm", "system_dlkm_oki", "vendor_dlkm", "odm_dlkm",
+    "system_dlkm", "system_dlkm_oki", "system_dlkm_gki", "vendor_dlkm", "odm_dlkm",
     "my_bigball", "my_carrier", "my_company", "my_engineering",
     "my_heytap", "my_manifest", "my_preload", "my_product",
     "my_region", "my_stock", "my_version",
@@ -1200,7 +1235,7 @@ DUMP_EXCLUDE_PARTITIONS = {
 
 def is_default_logical_name(part_name: str) -> bool:
     p = part_name.lower()
-    return p in DEFAULT_LOGICAL_PARTITIONS or p.startswith("my_") or p.endswith("_dlkm")
+    return p in DEFAULT_LOGICAL_PARTITIONS or p.startswith("my_") or p.startswith("system_dlkm") or p.endswith("_dlkm")
 
 
 # --- Pure-Python CrAU v2 payload.bin DeltaArchiveManifest SHA-256 parser ---
@@ -1523,7 +1558,7 @@ is_logical_part() {
         return 0
     fi
     case "$p" in
-        system|system_ext|product|vendor|odm|system_dlkm|system_dlkm_oki|vendor_dlkm|odm_dlkm|my_*)
+        system|system_ext|product|vendor|odm|system_dlkm*|vendor_dlkm*|odm_dlkm*|my_*)
             return 0 ;;
     esac
     return 1
@@ -2053,6 +2088,7 @@ class DumpWorker(QThread):
 
 
 
+
     def _su_read(self, cmd: str) -> str:
         proc = subprocess.run(["su", "-c", cmd], capture_output=True, text=True)
         return (proc.stdout or "").strip()
@@ -2294,6 +2330,28 @@ class DumpWorker(QThread):
                 if p and os.path.isfile(p):
                     override_map[req.lower()] = (req, p)
 
+        # Auto-pull EDL-only system_dlkm_oki.img / system_dlkm_gki.img via root if missing from OTA ZIP (OnePlus 15/15R/Ace 6/Ace 6T)
+        if shutil.which("su"):
+            slot = self._su_read("getprop ro.boot.slot_suffix")
+            cur_lower = {f.lower() for f in os.listdir(ota_dir) if f.endswith(".img")} | set(override_map.keys())
+            for dlkm_fn in ("system_dlkm_oki.img", "system_dlkm_gki.img", "my_company.img", "my_preload.img"):
+                if dlkm_fn in cur_lower:
+                    continue
+                part = dlkm_fn[:-4]
+                cands = ([f"/dev/block/mapper/{part}{slot}", f"/dev/block/by-name/{part}{slot}"] if slot else []) + [
+                    f"/dev/block/mapper/{part}", f"/dev/block/by-name/{part}"
+                ]
+                for blk in cands:
+                    if self._su_read(f'[ -e "{blk}" ] && echo 1 || echo 0') == "1":
+                        dst = os.path.join(ota_dir, dlkm_fn)
+                        rc = subprocess.run(
+                            ["su", "-c", f'dd if="{blk}" of="{dst}" bs=4M 2>/dev/null || dd if="{blk}" of="{dst}" bs=1M'],
+                            capture_output=True, text=True,
+                        ).returncode
+                        if rc == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 0:
+                            self.log.emit(f"  * Auto-pulled EDL-only {dlkm_fn} from live device ({blk})\n")
+                        break
+
         merged_imgs = sorted(
             f for f in os.listdir(ota_dir)
             if f.endswith(".img") and os.path.isfile(os.path.join(ota_dir, f))
@@ -2459,6 +2517,12 @@ class DumpWorker(QThread):
                 shutil.rmtree(meta_dir, ignore_errors=True)
                 with zipfile.ZipFile(ota_zip, "r") as zf:
                     tag, ota_ver = self._read_zip_meta(zf)
+                    inc_m = extract_ota_zip_metadata(zf)
+                    for mk in ("device", "fingerprint", "ota_version", "super_group", "logical_partitions"):
+                        if inc_m.get(mk) and not self.ota_meta.get(mk):
+                            self.ota_meta[mk] = inc_m[mk]
+                    if ota_ver:
+                        self.ota_meta["ota_version"] = ota_ver
                     inc_m = extract_ota_zip_metadata(zf)
                     for mk in ("device", "fingerprint", "ota_version", "super_group", "logical_partitions"):
                         if inc_m.get(mk) and not self.ota_meta.get(mk):
@@ -2676,7 +2740,7 @@ class DumperGUI(QWidget):
         rt_txt = QVBoxLayout()
         r_title = QLabel("Custom Recovery Flashable ZIP")
         r_title.setObjectName("TileTitle")
-        self.rec_sub = QLabel("Packs OOS_FILES_HERE + my_company, my_preload, system_dlkm_oki")
+        self.rec_sub = QLabel("Universal OOS/COS flasher, Non ColorOS device support is experimental")
         self.rec_sub.setObjectName("TileSub")
         self.rec_sub.setWordWrap(True)
         rt_txt.addWidget(r_title)
@@ -2687,21 +2751,7 @@ class DumperGUI(QWidget):
         row_rec.addWidget(self.recovery_switch)
         opt_col.addLayout(row_rec)
 
-        self.recovery_mode = "regional"
-        row_rmode = QHBoxLayout()
-        row_rmode.setSpacing(8)
-        self.btn_mode_regional = QPushButton("RegionalHybrid (OOS)")
-        self.btn_mode_regional.setCheckable(True)
-        self.btn_mode_regional.setChecked(True)
-        self.btn_mode_regional.setObjectName("PrimaryBtn")
-        self.btn_mode_regional.clicked.connect(lambda: self.set_recovery_mode("regional"))
-        self.btn_mode_super = QPushButton("SuperHybrid (COS)")
-        self.btn_mode_super.setCheckable(True)
-        self.btn_mode_super.setChecked(False)
-        self.btn_mode_super.clicked.connect(lambda: self.set_recovery_mode("super"))
-        row_rmode.addWidget(self.btn_mode_regional, 1)
-        row_rmode.addWidget(self.btn_mode_super, 1)
-        opt_col.addLayout(row_rmode)
+        self.recovery_mode = "super"
         root.addWidget(opt_card)
 
         self.run_btn = QPushButton("Merge OTA Firmwares")
@@ -2801,7 +2851,7 @@ class DumperGUI(QWidget):
 
         row_root = QHBoxLayout()
         rc_txt = QVBoxLayout()
-        rct = QLabel("Root System Update Capture (Magisk / KSU Next)")
+        rct = QLabel("Root System Update Capture")
         rct.setObjectName("TileTitle")
         rcs = QLabel("Capture NA/GOTA googleapis.com links from System Update prefs & logcat")
         rcs.setObjectName("TileSub")
@@ -3005,47 +3055,16 @@ class DumperGUI(QWidget):
             self.log("Add your incremental OTA ZIP(s) below device://dump, pick RegionalHybrid or SuperHybrid (or Fake OTA), and tap Merge.\n")
 
     def set_recovery_mode(self, mode: str, silent: bool = False):
-        self.recovery_mode = "super" if mode == "super" else "regional"
-        is_super = (self.recovery_mode == "super")
-        self.btn_mode_regional.setChecked(not is_super)
-        self.btn_mode_super.setChecked(is_super)
-        self.btn_mode_regional.setObjectName("" if is_super else "PrimaryBtn")
-        self.btn_mode_super.setObjectName("PrimaryBtn" if is_super else "")
-        for b in (self.btn_mode_regional, self.btn_mode_super):
-            b.style().unpolish(b)
-            b.style().polish(b)
-        if is_super:
-            self.rec_sub.setText("Universal ColorOS (COS_FILES_HERE) — live root META-INF + 4 safety guards")
-        else:
-            self.rec_sub.setText("Universal OOS RegionalHybrid (OOS_FILES_HERE) — live root META-INF + auto-preserve")
-            if not silent and self.recovery_switch.isChecked() and not self._has_device_dump_queued():
-                self.on_recovery_toggled(True)
+        self.recovery_mode = "regional" if mode == "regional" else "super"
+        self.rec_sub.setText("Universal OOS/COS flasher, Non ColorOS device support is experimental")
 
     def on_recovery_toggled(self, checked: bool):
         if not checked:
-            if self.recovery_mode == "super":
-                self.rec_sub.setText("Universal ColorOS (COS_FILES_HERE) — live root META-INF + 4 safety guards")
-            else:
-                self.rec_sub.setText("Universal OOS RegionalHybrid (OOS_FILES_HERE) — live root META-INF + auto-preserve")
+            self.rec_sub.setText("Universal OOS/COS flasher, Non ColorOS device support is experimental")
             return
         if self.fake_ota_switch.isChecked():
             self.fake_ota_switch.setChecked(False)
-        if self.recovery_mode == "super":
-            self.rec_sub.setText("SuperHybrid ready (COS_FILES_HERE + dynamic recovery & fastboot scripts)")
-            return
-        if self._has_device_dump_queued():
-            self.rec_sub.setText("RegionalHybrid ready (OOS_FILES_HERE auto-populated from Root Device Dump)")
-            return
-        dlg = RequiredImagesDialog(self, self.current_qss, self.hybrid_imgs)
-        dlg.showMaximized()
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.hybrid_imgs = dict(dlg.paths)
-            self.rec_sub.setText("Selected: my_company, my_preload, system_dlkm_oki (ready)")
-        else:
-            self.recovery_switch.blockSignals(True)
-            self.recovery_switch.setChecked(False)
-            self.recovery_switch.blockSignals(False)
-
+        self.rec_sub.setText("Universal OOS/COS flasher, Non ColorOS device support is experimental")
     def log(self, text):
         cursor = self.log_box.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -3119,7 +3138,7 @@ class DumperGUI(QWidget):
                 self.recovery_switch.blockSignals(True)
                 self.recovery_switch.setChecked(True)
                 self.recovery_switch.blockSignals(False)
-        if use_rec and rec_mode == "regional" and not is_dev_dump:
+        if False and use_rec and rec_mode == "regional" and not is_dev_dump:
             missing = [
                 r for r in REQUIRED_HYBRID_IMGS
                 if r not in hyb_reqs and not os.path.isfile(self.hybrid_imgs.get(r, ""))
