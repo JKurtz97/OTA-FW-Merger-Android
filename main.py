@@ -2,6 +2,8 @@ import base64
 import hashlib
 import json
 import struct
+import tarfile
+import urllib.request
 import os
 import re
 import shutil
@@ -18,22 +20,27 @@ from PySide6.QtWidgets import (
 )
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "1.8"
+APP_VERSION = "1.9.4"
 APP_PUBLISHER = "JKurtz"
 APP_PACKAGE = "com.jkurtz.otafwmerger"
 REQUIRED_HYBRID_IMGS = ("my_company.img", "my_preload.img", "system_dlkm_oki.img")
 
 CREDITS_LIST = [
-    ("koaaN (Jonas Salo)", "Original OTAFirmwareMerger & Regional Hybrid Flasher", "https://github.com/koaaN/OTAFirmwareMerger"),
-    ("luk1337", "oplus_archive OTA extraction & incremental merge pipeline", "https://github.com/luk1337/oplus_archive"),
-    ("snowwolf725", "Payload_Repack_Tool (delta_generator & payload repacking)", "https://github.com/snowwolf725/Payload_Repack_Tool"),
-    ("rhythmcache", "payload-dumper-rust static arm64 extraction engine", "https://github.com/rhythmcache/payload-dumper-rust"),
-    ("aria2", "Multi-connection Android aarch64 download engine", "https://github.com/aria2/aria2"),
-    ("Houvven", "OplusUpdater (direct device-specific OPLUS OTA queries)", "https://github.com/Houvven/OplusUpdater"),
-    ("R0rt1z2", "realme-ota (OPLUS OTA protocol research)", "https://github.com/R0rt1z2/realme-ota"),
-    ("docnok63, Jonas Salo & Daniel", "Regional Hybrid Flasher (inspired by FTH PHONE 1902 & Venkay)", "https://roms.danielspringer.at/"),
-    ("lzhiyong", "termux-ndk & android-sdk-tools (on-device arm64 build toolchain)", "https://github.com/lzhiyong/termux-ndk"),
-    ("EchterAlsFake", "PySide6-to-Android Qt 6.12 deployment guide", "https://github.com/EchterAlsFake/PySide6-to-Android"),
+    ("JKurtz97 / OTA-FW-Merger-Android", "Android port, Monet M3 UI, universal recovery/fastboot generator & root dump (GPL-3.0)", "https://github.com/JKurtz97/OTA-FW-Merger-Android"),
+    ("koaaN (Jonas Salo) / OTAFirmwareMerger", "Original desktop OTAFirmwareMerger concept & Regional Flasher work (independent port, not affiliated)", "https://github.com/koaaN/OTAFirmwareMerger"),
+    ("koaaN / Universal_Flasher", "Universal OPLUS fastboot & system_dlkm_oki / system_dlkm_gki reference", "https://github.com/koaaN/Universal_Flasher"),
+    ("Google / Android SDK Platform-Tools (ADB & Fastboot)", "Official AOSP ADB & Fastboot tools (Apache-2.0)", "https://developer.android.com/tools/adb"),
+    ("lzhiyong / android-sdk-tools", "Static aarch64 Android builds of AOSP adb & fastboot (Apache-2.0)", "https://github.com/lzhiyong/android-sdk-tools"),
+    ("Jefino9488 / Fastboot-Flasher", "USB-OTG Fastboot Flasher workflow & dynamic installer inspiration (MIT)", "https://github.com/Jefino9488/Fastboot-Flasher"),
+    ("Houvven / OplusUpdater", "OPLUS / OPPO / OnePlus / Realme OTA query engine v1.0.5 (GPL-3.0)", "https://pkg.go.dev/github.com/Houvven/OplusUpdater"),
+    ("rhythmcache / payload-dumper-rust", "Static aarch64 Android payload extractor v0.8.4 (Apache-2.0)", "https://github.com/rhythmcache/payload-dumper-rust"),
+    ("snowwolf725 / Payload_Repack_Tool", "delta_generator_aarch64 & payload.bin repacking workflow (MIT / Apache-2.0)", "https://github.com/snowwolf725/Payload_Repack_Tool"),
+    ("aria2 / aria2", "Multi-connection aarch64 Android download engine 1.37.0 (GPL-2.0+)", "https://github.com/aria2/aria2"),
+    ("luk1337 / oplus_archive", "OPLUS OTA extraction & incremental merge pipeline reference", "https://github.com/luk1337/oplus_archive"),
+    ("R0rt1z2 / realme-ota", "OPLUS / Realme OTA query protocol reference", "https://github.com/R0rt1z2/realme-ota"),
+    ("lzhiyong / termux-ndk", "On-device aarch64 Android NDK build toolchain", "https://github.com/lzhiyong/termux-ndk"),
+    ("EchterAlsFake / PySide6-to-Android", "PySide6 Qt 6 Android packaging & deployment tooling", "https://github.com/EchterAlsFake/PySide6-to-Android"),
+    ("PySide6 / Qt for Python", "Qt 6 Android UI framework (LGPL-3.0 / GPL-3.0)", "https://pypi.org/project/PySide6/"),
 ]
 
 
@@ -270,6 +277,22 @@ QPushButton#PrimaryBtn:disabled {{
     background-color: {t["disabled_bg"]};
     color: {t["disabled_fg"]};
 }}
+QPushButton#IconPillBtn {{
+    background-color: {t["surface_container_high"]};
+    color: {t["on_surface"]};
+    border: none;
+    border-radius: 20px;
+    padding: 0px;
+    min-width: 40px;
+    max-width: 40px;
+    min-height: 40px;
+    max-height: 40px;
+    font-size: 20px;
+    font-weight: 700;
+}}
+QPushButton#IconPillBtn:pressed {{
+    background-color: {t["surface_pressed"]};
+}}
 QPushButton#TextBtn {{
     background-color: transparent;
     color: {t["primary"]};
@@ -394,7 +417,27 @@ def get_native_lib_dir() -> str:
     return local if os.path.isdir(local) else ""
 
 
+ROOT_BIN_DIR = "/data/local/tmp/otafwmerger_bins"
+
+
+def _root_bin_exists(name: str) -> str:
+    cand = f"{ROOT_BIN_DIR}/{name}"
+    if os.path.isfile(cand) and os.access(cand, os.X_OK):
+        return cand
+    if shutil.which("su"):
+        try:
+            r = subprocess.run(["su", "-c", f'[ -x "{cand}" ] && echo 1 || echo 0'], capture_output=True, text=True, timeout=2)
+            if (r.stdout or "").strip() == "1":
+                return cand
+        except Exception:
+            pass
+    return ""
+
+
 def find_bin(name: str) -> str:
+    root_ov = _root_bin_exists(name)
+    if root_ov:
+        return root_ov
     lib_dir = get_native_lib_dir()
     if lib_dir:
         cand = os.path.join(lib_dir, f"lib{name}.so")
@@ -405,6 +448,37 @@ def find_bin(name: str) -> str:
         return found
     raise FileNotFoundError(f"Bundled binary lib{name}.so not found in {lib_dir or 'PATH'}")
 
+
+def find_fastboot() -> str:
+    for cand in (
+        _root_bin_exists("fastboot"),
+        os.path.join(get_native_lib_dir() or "", "libfastboot.so"),
+        "/data/data/com.termux/files/usr/bin/fastboot",
+        shutil.which("fastboot") or "",
+        "/system/bin/fastboot",
+    ):
+        if cand and (os.path.isfile(cand) or (shutil.which("su") and cand.startswith("/"))):
+            if os.path.isfile(cand):
+                return cand
+            try:
+                r = subprocess.run(["su", "-c", f'[ -x "{cand}" ] && echo 1 || echo 0'], capture_output=True, text=True, timeout=2)
+                if (r.stdout or "").strip() == "1":
+                    return cand
+            except Exception:
+                pass
+    return ""
+
+def find_adb() -> str:
+    for cand in (
+        _root_bin_exists("adb"),
+        os.path.join(get_native_lib_dir() or "", "libadb.so"),
+        "/data/data/com.termux/files/usr/bin/adb",
+        shutil.which("adb") or "",
+        "/system/bin/adb",
+    ):
+        if cand and os.path.isfile(cand):
+            return cand
+    return ""
 
 def getprop(key: str, default: str = "") -> str:
     try:
@@ -704,6 +778,49 @@ def configure_smooth_scroll(scroll_widget, tap_callback=None):
         scroll_widget._touch_scroll_filter = TouchScrollFilter(scroll_widget, tap_callback=tap_callback)
 
 
+
+class RefreshPillButton(QPushButton):
+    """Monet-themed pill button matching StatusChip with a crisp vector-drawn circular refresh arrow."""
+    def __init__(self, tokens: dict, parent=None):
+        super().__init__("", parent)
+        self._bg = QColor(tokens["primary_container"])
+        self._fg = QColor(tokens["on_primary_container"])
+        self._pressed_bg = QColor(tokens["primary"])
+        self.setFixedSize(40, 30)
+        self.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0px; }")
+
+    def set_tokens(self, tokens: dict):
+        self._bg = QColor(tokens["primary_container"])
+        self._fg = QColor(tokens["on_primary_container"])
+        self._pressed_bg = QColor(tokens["primary"])
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(0, 0, self.width(), self.height())
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self._pressed_bg if self.isDown() else self._bg)
+        p.drawRoundedRect(r, r.height() / 2.0, r.height() / 2.0)
+
+        # Draw crisp circular refresh arc + arrowhead
+        cx, cy = self.width() / 2.0, self.height() / 2.0
+        rad = 6.5
+        arc_rect = QRectF(cx - rad, cy - rad, rad * 2.0, rad * 2.0)
+        pen = QPen(self._fg, 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        # 290-degree arc starting at 40 deg (Qt uses 1/16th of a degree, counter-clockwise)
+        p.drawArc(arc_rect, 40 * 16, 290 * 16)
+
+        # Arrowhead at top-right end of arc (~40 deg)
+        ax = cx + rad * 0.77
+        ay = cy - rad * 0.64
+        p.drawLine(int(round(ax)), int(round(ay)), int(round(ax + 1.5)), int(round(ay - 4.2)))
+        p.drawLine(int(round(ax)), int(round(ay)), int(round(ax - 4.2)), int(round(ay - 0.8)))
+        p.end()
+
+
 class CreditsDialog(QDialog):
     def __init__(self, parent, qss: str, primary_hex: str):
         super().__init__(parent)
@@ -736,29 +853,38 @@ class CreditsDialog(QDialog):
         il.setContentsMargins(0, 0, 0, 0)
         il.setSpacing(8)
 
+        il.setContentsMargins(0, 0, 8, 0)
+        il.setSpacing(10)
         for author, desc, url in CREDITS_LIST:
             card = QFrame()
             card.setObjectName("Card")
+            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
             cl = QVBoxLayout(card)
-            cl.setContentsMargins(14, 10, 14, 10)
-            cl.setSpacing(3)
+            cl.setContentsMargins(14, 12, 14, 12)
+            cl.setSpacing(4)
 
-            lbl = QLabel(f'<b>{author}</b> &nbsp; <a style="color:{primary_hex};" href="{url}">GitHub / Source</a>')
-            lbl.setObjectName("TileTitle")
-            lbl.setTextFormat(Qt.TextFormat.RichText)
-            lbl.setOpenExternalLinks(False)
-            lbl.linkActivated.connect(lambda u: QDesktopServices.openUrl(QUrl(u)))
+            title_lbl = QLabel(author)
+            title_lbl.setObjectName("TileTitle")
+            title_lbl.setWordWrap(True)
 
             sub = QLabel(desc)
             sub.setObjectName("TileSub")
             sub.setWordWrap(True)
 
-            cl.addWidget(lbl)
+            link_lbl = QLabel(f'<a style="color:{primary_hex};text-decoration:underline;" href="{url}">GitHub / Source</a>')
+            link_lbl.setObjectName("TileSub")
+            link_lbl.setTextFormat(Qt.TextFormat.RichText)
+            link_lbl.setOpenExternalLinks(False)
+            link_lbl.linkActivated.connect(lambda u: QDesktopServices.openUrl(QUrl(u)))
+
+            cl.addWidget(title_lbl)
             cl.addWidget(sub)
+            cl.addWidget(link_lbl)
             il.addWidget(card)
 
         il.addStretch(1)
         scroll.setWidget(inner)
+        configure_smooth_scroll(scroll)
         layout.addWidget(scroll, 1)
 
         close_btn = QPushButton("Close")
@@ -1494,8 +1620,11 @@ command -v unzip >/dev/null 2>&1 || abort "Recovery is missing unzip"
 [ -x "$LPMAKE" ]   || abort "Recovery is missing lpmake (use Aera or OrangeFox)"
 [ -x "$SIMG2IMG" ] || abort "Recovery is missing simg2img (use Aera or OrangeFox)"
 
-# Device / Platform safety check (Aera/OrangeFox often report marketing name/codename like "OnePlus 15" / "infiniti" while ColorOS reports "CPH2749" / "OP611FL1")
-if [ ! -f "/sdcard/superhybrid_force" ] && { [ -n "$TARGET_DEVICE" ] || [ -n "$TARGET_MODEL" ] || [ -n "$TARGET_PLATFORM" ]; }; then
+# Device / Platform safety check:
+# - If TARGET_PLATFORM is known (built for This Device) and mismatches ro.board.platform -> hard-abort (wrong SoC).
+# - If TARGET_PLATFORM is blank (built for Another Device from OTA metadata like OP611FL1 while AERA/OrangeFox
+#   reports community codenames like infiniti) -> log a note and continue with block-size & super guards.
+if [ ! -f "/sdcard/superhybrid_force" ]; then
     CUR_DEV="$(getprop ro.product.device 2>/dev/null)"
     CUR_MOD="$(getprop ro.product.model 2>/dev/null)"
     CUR_PRD="$(getprop ro.build.product 2>/dev/null)"
@@ -1504,19 +1633,25 @@ if [ ! -f "/sdcard/superhybrid_force" ] && { [ -n "$TARGET_DEVICE" ] || [ -n "$T
     MATCHED=0
     for c in "$CUR_DEV" "$CUR_MOD" "$CUR_PRD" "$CUR_VDEV"; do
         [ -z "$c" ] && continue
-        if [ "$c" = "$TARGET_DEVICE" ] || [ "$c" = "$TARGET_MODEL" ] || { [ -n "$TARGET_MARKET" ] && [ "$c" = "$TARGET_MARKET" ]; }; then
+        if { [ -n "$TARGET_DEVICE" ] && [ "$c" = "$TARGET_DEVICE" ]; } || \
+           { [ -n "$TARGET_MODEL" ] && [ "$c" = "$TARGET_MODEL" ]; } || \
+           { [ -n "$TARGET_MARKET" ] && [ "$c" = "$TARGET_MARKET" ]; }; then
             MATCHED=1
             break
         fi
     done
-    if [ "$MATCHED" = "0" ] && [ -n "$TARGET_PLATFORM" ] && [ -n "$CUR_PLAT" ] && [ "$CUR_PLAT" = "$TARGET_PLATFORM" ]; then
-        ui_print "- Platform verified: $CUR_PLAT (recovery reports $CUR_MOD / $CUR_DEV)"
-        MATCHED=1
-    fi
-    if [ -n "$CUR_DEV" ] && [ "$MATCHED" = "0" ]; then
-        ui_print "! Device mismatch: phone is $CUR_MOD ($CUR_DEV / $CUR_PLAT), ZIP targets ${TARGET_MODEL:-$TARGET_DEVICE} ($TARGET_PLATFORM)."
-        ui_print "! Create /sdcard/superhybrid_force to override for cross-region flashing."
-        abort "Device mismatch (no partitions modified)"
+    if [ "$MATCHED" = "0" ] && [ -n "$TARGET_PLATFORM" ] && [ -n "$CUR_PLAT" ]; then
+        if [ "$CUR_PLAT" = "$TARGET_PLATFORM" ]; then
+            ui_print "- Platform verified: $CUR_PLAT (recovery reports $CUR_MOD / $CUR_DEV)"
+            MATCHED=1
+        else
+            ui_print "! SoC platform mismatch: phone is $CUR_MOD ($CUR_DEV / $CUR_PLAT), ZIP targets ${TARGET_MODEL:-$TARGET_DEVICE} ($TARGET_PLATFORM)."
+            ui_print "! Create /sdcard/superhybrid_force to override."
+            abort "Platform mismatch (no partitions modified)"
+        fi
+    elif [ "$MATCHED" = "0" ] && [ -n "$TARGET_DEVICE" ]; then
+        ui_print "- OTA target: $TARGET_DEVICE (recovery reports $CUR_MOD / $CUR_DEV / $CUR_PLAT)"
+        ui_print "- Cross-device build (no host SoC stamp): continuing with block-size & super guards"
     fi
 fi
 
@@ -1934,13 +2069,15 @@ class DumpWorker(QThread):
     log = Signal(str)
     finished = Signal(int, str, str)
 
-    def __init__(self, inputs, fake_ota=False, recovery_zip=False, recovery_mode="regional", extra_imgs=None, stock_overrides=None, work_dir=None):
+    def __init__(self, inputs, fake_ota=False, recovery_zip=False, recovery_mode="super", extra_imgs=None, stock_overrides=None, for_other_device=False, skip_hash_check=False, work_dir=None):
         super().__init__()
         self.inputs = inputs
         self.fake_ota = fake_ota
         self.recovery_zip = recovery_zip
         self.recovery_mode = recovery_mode or 'regional'
         self.stock_overrides = dict(stock_overrides or {})
+        self.for_other_device = bool(for_other_device)
+        self.skip_hash_check = bool(skip_hash_check)
         self.last_expected_hashes = {}
         self.ota_meta = {'source': 'fallback', 'device': '', 'model': '', 'fingerprint': '', 'ota_version': '', 'ota_type': 'AB', 'super_group': '', 'logical_partitions': []}
         self.extra_imgs = extra_imgs or {}
@@ -2319,8 +2456,11 @@ class DumpWorker(QThread):
             raise RuntimeError(f"SHA-256 verification failed ({label}).{hint}")
 
     def _build_universal_hybrid_zip(self, ota_dir: str, out_dir: str, safe_name: str, mode: str = "super"):
-        # Enrich any missing metadata from the live rooted device on the fly
-        self._probe_device_meta_root()
+        # Only probe host device metadata when compiling for THIS device; for ANOTHER device use OTA metadata only
+        if not self.for_other_device:
+            self._probe_device_meta_root()
+        else:
+            self.log.emit("Target = Another Device: building META-INF strictly from OTA ZIP metadata (skipping host props).\n")
 
         is_regional = (mode == "regional")
         files_dir = "OOS_FILES_HERE" if is_regional else "OS_FILES_HERE"
@@ -2337,7 +2477,7 @@ class DumpWorker(QThread):
                     override_map[req.lower()] = (req, p)
 
         # Auto-pull EDL-only system_dlkm_oki.img / system_dlkm_gki.img via root if missing from OTA ZIP (OnePlus 15/15R/Ace 6/Ace 6T)
-        if shutil.which("su"):
+        if (not self.for_other_device) and shutil.which("su"):
             slot = self._su_read("getprop ro.boot.slot_suffix")
             cur_lower = {f.lower() for f in os.listdir(ota_dir) if f.endswith(".img")} | set(override_map.keys())
             for dlkm_fn in ("system_dlkm_oki.img", "system_dlkm_gki.img", "my_company.img", "my_preload.img"):
@@ -2515,7 +2655,7 @@ class DumpWorker(QThread):
                 body = f"[{tag}]({full_input}) (full)"
                 shutil.rmtree(ota_dir, ignore_errors=True)
                 os.makedirs(ota_dir, exist_ok=True)
-                self._run_cmd([ota_extractor, payload_work, "-o", ota_dir], allow_root_fallback=True)
+                self._run_cmd([ota_extractor, payload_work, "-o", ota_dir] + (["--no-verify"] if self.skip_hash_check else []), allow_root_fallback=True)
                 os.remove(payload_work)
 
             for inc in self.inputs[1:]:
@@ -2562,11 +2702,15 @@ class DumpWorker(QThread):
                 ota_new = os.path.join(wd, "ota_new")
                 shutil.rmtree(ota_new, ignore_errors=True)
                 os.makedirs(ota_new, exist_ok=True)
-                inc_hashes = parse_payload_partition_hashes(payload_work)
+                inc_hashes = {} if self.skip_hash_check else parse_payload_partition_hashes(payload_work)
+                if self.skip_hash_check:
+                    self.log.emit("Skipping SHA-256 hash check (Skip Hash Check enabled).\n")
                 if inc_hashes and used_device_dump:
                     self._verify_partition_hashes(ota_dir, inc_hashes, phase="old")
-                self._run_cmd([ota_extractor, payload_work, "--source-dir", ota_dir, "-o", ota_new],
-                              allow_root_fallback=True)
+                ext_cmd = [ota_extractor, payload_work, "--source-dir", ota_dir, "-o", ota_new]
+                if self.skip_hash_check:
+                    ext_cmd.append("--no-verify")
+                self._run_cmd(ext_cmd, allow_root_fallback=True)
                 if inc_hashes:
                     self._verify_partition_hashes(ota_new, inc_hashes, phase="new")
                     self.last_expected_hashes = inc_hashes
@@ -2641,6 +2785,374 @@ class DumpWorker(QThread):
 
 
 
+
+class FastbootFlashWorker(QThread):
+    """USB-OTG phone-to-phone Fastboot Flasher (inspired by MIT-licensed Jefino9488/Fastboot-Flasher)."""
+    log = Signal(str)
+    finished = Signal(int)
+
+    def __init__(self, source_path: str, disable_verity=False, both_slots=True, wipe_data=False, auto_reboot=True, work_dir=None):
+        super().__init__()
+        self.source_path = source_path
+        self.disable_verity = disable_verity
+        self.both_slots = both_slots
+        self.wipe_data = wipe_data
+        self.auto_reboot = auto_reboot
+        self.work_dir = work_dir or get_work_dir()
+
+    def _fb(self, fb_bin: str, args: list, ignore_err=False):
+        cmd_str = " ".join([f'"{fb_bin}"'] + [f'"{a}"' for a in args])
+        self.log.emit(f"$ fastboot {' '.join(args)}\n")
+        proc = subprocess.Popen(["su", "-c", cmd_str], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in proc.stdout:
+            self.log.emit(line)
+        rc = proc.wait()
+        if rc != 0 and not ignore_err:
+            raise RuntimeError(f"fastboot failed (exit {rc}): {' '.join(args)}")
+        return rc
+
+    def run(self):
+        tmp_stage = None
+        try:
+            if not shutil.which("su"):
+                raise RuntimeError("Root (su) is required on the host phone for USB-OTG fastboot access.")
+            fb = find_fastboot()
+            if not fb:
+                raise RuntimeError("fastboot binary not found. Install Termux android-tools or update binaries in Updater (⟳).")
+
+            src = self.source_path
+            if os.path.isfile(src) and src.lower().endswith(".img"):
+                part = os.path.splitext(os.path.basename(src))[0]
+                extra = ["--disable-verity", "--disable-verification"] if (self.disable_verity and part.startswith("vbmeta")) else []
+                self.log.emit(f"=== Single Image Flash: {part}.img ===\n")
+                if self.both_slots and part != "super":
+                    self._fb(fb, ["flash", f"{part}_a", src] + extra)
+                    self._fb(fb, ["flash", f"{part}_b", src] + extra, ignore_err=True)
+                else:
+                    self._fb(fb, ["flash", part, src] + extra)
+                if self.auto_reboot:
+                    self._fb(fb, ["reboot"], ignore_err=True)
+                self.finished.emit(0)
+                return
+
+            img_dir = src
+            if os.path.isfile(src) and src.lower().endswith(".zip"):
+                tmp_stage = os.path.join(self.work_dir, "fastboot_stage")
+                shutil.rmtree(tmp_stage, ignore_errors=True)
+                os.makedirs(tmp_stage, exist_ok=True)
+                self.log.emit(f"Extracting images from {os.path.basename(src)}...\n")
+                with zipfile.ZipFile(src, "r") as zf:
+                    for info in zf.infolist():
+                        if info.is_dir() or not info.filename.lower().endswith(".img"):
+                            continue
+                        bn = os.path.basename(info.filename.replace("\\", "/"))
+                        dst = os.path.join(tmp_stage, bn)
+                        with zf.open(info, "r") as sf, open(dst, "wb") as df:
+                            shutil.copyfileobj(sf, df, length=4 * 1024 * 1024)
+                img_dir = tmp_stage
+
+            imgs = sorted(f for f in os.listdir(img_dir) if f.lower().endswith(".img") and os.path.isfile(os.path.join(img_dir, f)))
+            if not imgs:
+                raise RuntimeError("No .img files found in selected source.")
+
+            phys_early, phys_other, logical_parts = [], [], []
+            has_super = False
+            for fn in imgs:
+                part = fn[:-4]
+                if part == "super":
+                    has_super = True
+                elif is_default_logical_name(part):
+                    logical_parts.append(part)
+                elif part in EARLY_BOOT_PARTITIONS:
+                    phys_early.append(part)
+                else:
+                    phys_other.append(part)
+
+            self.log.emit(f"=== Full Fastboot Flash ({len(imgs)} images) ===\n")
+            for p in phys_early:
+                ip = os.path.join(img_dir, f"{p}.img")
+                extra = ["--disable-verity", "--disable-verification"] if (self.disable_verity and p.startswith("vbmeta")) else []
+                if self.both_slots:
+                    self._fb(fb, ["flash", f"{p}_a", ip] + extra)
+                    self._fb(fb, ["flash", f"{p}_b", ip] + extra, ignore_err=True)
+                else:
+                    self._fb(fb, ["flash", p, ip] + extra)
+
+            if has_super:
+                self._fb(fb, ["flash", "super", os.path.join(img_dir, "super.img")])
+
+            if phys_other or (logical_parts and not has_super):
+                self.log.emit(">>> Rebooting target device to fastbootd...\n")
+                self._fb(fb, ["reboot", "fastboot"])
+                time.sleep(6)
+                self._fb(fb, ["snapshot-update", "cancel"], ignore_err=True)
+
+            for p in phys_other:
+                ip = os.path.join(img_dir, f"{p}.img")
+                if self.both_slots:
+                    self._fb(fb, ["flash", "--slot=all", p, ip], ignore_err=True)
+                else:
+                    self._fb(fb, ["flash", p, ip], ignore_err=True)
+
+            if logical_parts and not has_super:
+                for p in logical_parts:
+                    ip = os.path.join(img_dir, f"{p}.img")
+                    for suf in ("_a", "_b", "_a-cow", "_b-cow"):
+                        self._fb(fb, ["delete-logical-partition", f"{p}{suf}"], ignore_err=True)
+                    self._fb(fb, ["create-logical-partition", f"{p}_a", "1"])
+                    self._fb(fb, ["create-logical-partition", f"{p}_b", "1"], ignore_err=True)
+                    self._fb(fb, ["flash", f"{p}_a", ip])
+
+            if self.wipe_data:
+                self.log.emit(">>> Wiping userdata / metadata...\n")
+                self._fb(fb, ["erase", "metadata"], ignore_err=True)
+                self._fb(fb, ["erase", "userdata"], ignore_err=True)
+
+            self._fb(fb, ["--set-active=a"], ignore_err=True)
+            if self.auto_reboot:
+                self._fb(fb, ["reboot"], ignore_err=True)
+            self.log.emit("\n=== Fastboot Flash Complete ===\n")
+            self.finished.emit(0)
+        except Exception as e:
+            self.log.emit(f"\nERROR: {e}\n")
+            self.finished.emit(1)
+        finally:
+            if tmp_stage:
+                shutil.rmtree(tmp_stage, ignore_errors=True)
+
+
+class BinaryUpdateWorker(QThread):
+    """Fetch latest upstream arm64-v8a tool binaries from GitHub & install to /data/local/tmp/otafwmerger_bins via root."""
+    log = Signal(str)
+    finished = Signal(int)
+
+    def _http_json(self, url: str) -> dict:
+        req = urllib.request.Request(url, headers={"User-Agent": "OTA-FW-Merger/1.9"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+
+    def _http_download(self, url: str, dst: str):
+        req = urllib.request.Request(url, headers={"User-Agent": "OTA-FW-Merger/1.9"})
+        with urllib.request.urlopen(req, timeout=60) as resp, open(dst, "wb") as fp:
+            shutil.copyfileobj(resp, fp, length=256 * 1024)
+
+    def _install_root_bin(self, src_path: str, bin_name: str):
+        rc = subprocess.run(
+            ["su", "-c", f'mkdir -p "{ROOT_BIN_DIR}" && cp -f "{src_path}" "{ROOT_BIN_DIR}/{bin_name}" && chmod 755 "{ROOT_BIN_DIR}/{bin_name}"'],
+            capture_output=True, text=True,
+        ).returncode
+        if rc != 0:
+            raise RuntimeError(f"Failed installing {bin_name} to {ROOT_BIN_DIR}")
+        self.log.emit(f"  [UPDATED] {bin_name} -> {ROOT_BIN_DIR}/{bin_name}\n")
+
+    def run(self):
+        tmp_dir = os.path.join(get_work_dir(), "bin_update_tmp")
+        try:
+            if not shutil.which("su"):
+                raise RuntimeError("Root (su) is required to install dynamic binary overrides into /data/local/tmp/.")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            os.makedirs(tmp_dir, exist_ok=True)
+            updated = 0
+
+            # 1. rhythmcache/payload-dumper-rust (ota_extractor)
+            self.log.emit("1) Checking rhythmcache/payload-dumper-rust...\n")
+            try:
+                rel = self._http_json("https://api.github.com/repos/rhythmcache/payload-dumper-rust/releases/latest")
+                tag = rel.get("tag_name", "?")
+                self.log.emit(f"   Latest release: {tag}\n")
+                asset_url = ""
+                asset_name = ""
+                for a in rel.get("assets", []):
+                    nm = a.get("name", "").lower()
+                    if "aarch64" in nm and "android" in nm:
+                        asset_url = a.get("browser_download_url", "")
+                        asset_name = a.get("name", "")
+                        break
+                if asset_url:
+                    dl = os.path.join(tmp_dir, asset_name)
+                    self.log.emit(f"   Downloading {asset_name}...\n")
+                    self._http_download(asset_url, dl)
+                    bin_src = dl
+                    if asset_name.lower().endswith(".zip"):
+                        with zipfile.ZipFile(dl, "r") as zf:
+                            for m in zf.namelist():
+                                if "payload_dumper" in os.path.basename(m).lower() and not m.endswith("/"):
+                                    bin_src = zf.extract(m, tmp_dir)
+                                    break
+                    elif asset_name.lower().endswith((".tar.gz", ".tgz")):
+                        with tarfile.open(dl, "r:gz") as tf:
+                            for m in tf.getmembers():
+                                if m.isfile() and "payload_dumper" in os.path.basename(m.name).lower():
+                                    tf.extract(m, tmp_dir)
+                                    bin_src = os.path.join(tmp_dir, m.name)
+                                    break
+                    self._install_root_bin(bin_src, "ota_extractor")
+                    updated += 1
+                else:
+                    self.log.emit("   No aarch64-android release asset found; keeping bundled libota_extractor.so.\n")
+            except Exception as e:
+                self.log.emit(f"   Skipped payload-dumper-rust: {e}\n")
+
+            # 2. snowwolf725/Payload_Repack_Tool (delta_generator_aarch64)
+            self.log.emit("2) Checking snowwolf725/Payload_Repack_Tool (delta_generator)...\n")
+            try:
+                dg_url = "https://raw.githubusercontent.com/snowwolf725/Payload_Repack_Tool/main/bin/delta_generator_aarch64"
+                dg_dl = os.path.join(tmp_dir, "delta_generator")
+                self._http_download(dg_url, dg_dl)
+                if os.path.getsize(dg_dl) > 100000:
+                    self._install_root_bin(dg_dl, "delta_generator")
+                    updated += 1
+            except Exception as e:
+                self.log.emit(f"   Skipped delta_generator: {e}\n")
+
+            # 3. aria2/aria2 latest version check
+            self.log.emit("3) Checking aria2/aria2...\n")
+            try:
+                rel = self._http_json("https://api.github.com/repos/aria2/aria2/releases/latest")
+                self.log.emit(f"   Latest upstream tag: {rel.get('tag_name', '?')} (bundled: 1.37.0)\n")
+                for a in rel.get("assets", []):
+                    nm = a.get("name", "").lower()
+                    if "aarch64" in nm and "android" in nm:
+                        dl = os.path.join(tmp_dir, a["name"])
+                        self._http_download(a["browser_download_url"], dl)
+                        if not dl.endswith((".zip", ".tar.gz", ".tgz")):
+                            self._install_root_bin(dl, "aria2c")
+                            updated += 1
+                        break
+            except Exception as e:
+                self.log.emit(f"   Skipped aria2: {e}\n")
+
+            # 4. Houvven/OplusUpdater module version check via Go proxy
+            self.log.emit("4) Checking Houvven/OplusUpdater (proxy.golang.org)...\n")
+            try:
+                info = self._http_json("https://proxy.golang.org/github.com/!houvven/!oplus!updater/@latest")
+                self.log.emit(f"   Latest Go module version: {info.get('Version', '?')} (bundled: v1.0.5)\n")
+            except Exception as e:
+                self.log.emit(f"   OplusUpdater check skipped: {e}\n")
+
+            # 5. Google AOSP Platform-Tools (static aarch64 adb & fastboot via lzhiyong/android-sdk-tools)
+            self.log.emit("5) Checking AOSP Platform-Tools (adb & fastboot)...\n")
+            try:
+                rel = self._http_json("https://api.github.com/repos/lzhiyong/android-sdk-tools/releases/latest")
+                self.log.emit(f"   Latest Platform-Tools tag: {rel.get('tag_name', '?')}\n")
+                for a in rel.get("assets", []):
+                    nm = a.get("name", "").lower()
+                    if "static" in nm and "aarch64" in nm and nm.endswith(".zip"):
+                        dl = os.path.join(tmp_dir, a["name"])
+                        self.log.emit(f"   Downloading {a['name']}...\n")
+                        self._http_download(a["browser_download_url"], dl)
+                        with zipfile.ZipFile(dl, "r") as zf:
+                            for tool in ("fastboot", "adb"):
+                                for m in zf.namelist():
+                                    if os.path.basename(m) == tool and not m.endswith("/"):
+                                        ext = zf.extract(m, tmp_dir)
+                                        self._install_root_bin(ext, tool)
+                                        updated += 1
+                                        break
+                        break
+            except Exception as e:
+                self.log.emit(f"   Skipped Platform-Tools: {e}\n")
+
+            self.log.emit(f"\nDone! Installed {updated} updated binary override(s) in {ROOT_BIN_DIR}.\n")
+            self.finished.emit(0)
+        except Exception as e:
+            self.log.emit(f"\nERROR: {e}\n")
+            self.finished.emit(1)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+class SettingsDialog(QDialog):
+    """Settings & Dynamic GitHub Binary Updater (Root)."""
+    def __init__(self, parent, qss: str):
+        super().__init__(parent)
+        self.setWindowTitle("Settings & Binary Updater")
+        self.setStyleSheet(qss)
+        self.worker = None
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 20, 16, 20)
+        lay.setSpacing(12)
+
+        t = QLabel("Settings & Tool Binaries")
+        t.setObjectName("AppTitle")
+        lay.addWidget(t)
+
+        sub = QLabel(
+            "Dynamically update bundled native tools directly from their upstream GitHub channels via root "
+            "(/data/local/tmp/otafwmerger_bins) so tools stay current even without an APK rebuild."
+        )
+        sub.setObjectName("AppSubtitle")
+        sub.setWordWrap(True)
+        lay.addWidget(sub)
+
+        self.status_lbl = QLabel("")
+        self.status_lbl.setObjectName("TileSub")
+        self.status_lbl.setWordWrap(True)
+        lay.addWidget(self.status_lbl)
+        self._refresh_status()
+
+        self.upd_btn = QPushButton("Update Binaries via GitHub (Root)")
+        self.upd_btn.setObjectName("PrimaryBtn")
+        self.upd_btn.clicked.connect(self.start_update)
+        lay.addWidget(self.upd_btn)
+
+        self.rst_btn = QPushButton("Reset to Bundled APK Binaries")
+        self.rst_btn.clicked.connect(self.reset_bins)
+        lay.addWidget(self.rst_btn)
+
+        self.log_out = QTextEdit()
+        self.log_out.setObjectName("LogBox")
+        self.log_out.setReadOnly(True)
+        self.log_out.setMinimumHeight(180)
+        lay.addWidget(self.log_out, 1)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        lay.addWidget(close_btn)
+
+    def _refresh_status(self):
+        lines = []
+        for nm, label in (
+            ("ota_extractor", "payload-dumper-rust"),
+            ("delta_generator", "delta_generator"),
+            ("aria2c", "aria2c"),
+            ("oplus_updater", "OplusUpdater"),
+            ("fastboot", "fastboot (Bundled AOSP)"),
+            ("adb", "adb (Bundled AOSP)"),
+        ):
+            ov = _root_bin_exists(nm)
+            if ov:
+                lines.append(f"• {label}: GitHub Root Override ({ROOT_BIN_DIR}/{nm})")
+            elif nm == "fastboot":
+                fb = find_fastboot()
+                lines.append(f"• {label}: {'Bundled APK (libfastboot.so)' if fb and fb.endswith('libfastboot.so') else (fb or 'Not found')}")
+            elif nm == "adb":
+                ab = find_adb()
+                lines.append(f"• {label}: {'Bundled APK (libadb.so)' if ab and ab.endswith('libadb.so') else (ab or 'Not found')}")
+            else:
+                lines.append(f"• {label}: Bundled APK (lib{nm}.so)")
+        self.status_lbl.setText("\n".join(lines))
+
+    def start_update(self):
+        self.upd_btn.setEnabled(False)
+        self.log_out.clear()
+        self.worker = BinaryUpdateWorker()
+        self.worker.log.connect(lambda s: (self.log_out.moveCursor(QTextCursor.MoveOperation.End), self.log_out.insertPlainText(s)))
+        self.worker.finished.connect(self._on_done)
+        self.worker.start()
+
+    def _on_done(self, _rc):
+        self.upd_btn.setEnabled(True)
+        self._refresh_status()
+
+    def reset_bins(self):
+        if shutil.which("su"):
+            subprocess.run(["su", "-c", f'rm -rf "{ROOT_BIN_DIR}"'], capture_output=True)
+            self.log_out.append("Cleared dynamic overrides — reverted to bundled APK binaries.\n")
+        self._refresh_status()
+
+
 class DumperGUI(QWidget):
     def __init__(self, app: QApplication):
         super().__init__()
@@ -2677,6 +3189,11 @@ class DumperGUI(QWidget):
         self.status_chip.setObjectName("StatusChip")
         self.status_chip.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         hdr_row.addWidget(self.status_chip)
+
+        self.settings_btn = RefreshPillButton(self.tokens)
+        self.settings_btn.setToolTip("Update Tool Binaries via GitHub (Root)")
+        self.settings_btn.clicked.connect(self.open_settings)
+        hdr_row.addWidget(self.settings_btn)
         outer.addWidget(hdr_wrap)
 
         self.pages = QStackedWidget()
@@ -2764,6 +3281,22 @@ class DumperGUI(QWidget):
         opt_col.addLayout(row_rec)
 
         self.recovery_mode = "super"
+
+        row_skip = QHBoxLayout()
+        sk_txt = QVBoxLayout()
+        sk_t = QLabel("Skip Hash Check")
+        sk_t.setObjectName("TileTitle")
+        sk_s = QLabel("Skip internal SHA-256 verification to save time")
+        sk_s.setObjectName("TileSub")
+        sk_s.setWordWrap(True)
+        sk_txt.addWidget(sk_t)
+        sk_txt.addWidget(sk_s)
+        row_skip.addLayout(sk_txt, 1)
+        self.skip_hash_switch = M3Switch(self.tokens)
+        self.skip_hash_switch.toggled.connect(self.on_skip_hash_toggled)
+        row_skip.addWidget(self.skip_hash_switch)
+        opt_col.addLayout(row_skip)
+
         root.addWidget(opt_card)
 
         self.run_btn = QPushButton("Merge OTA Firmwares")
@@ -2783,17 +3316,31 @@ class DumperGUI(QWidget):
         lc_layout = QVBoxLayout(log_card)
         lc_layout.setContentsMargins(14, 10, 14, 12)
         lc_layout.setSpacing(6)
+        con_hdr = QHBoxLayout()
+        con_hdr.setSpacing(8)
         log_lbl = QLabel(f"Console  •  Output: {self.work_dir}/output")
         log_lbl.setObjectName("AppSubtitle")
         log_lbl.setWordWrap(True)
-        lc_layout.addWidget(log_lbl)
+        con_hdr.addWidget(log_lbl, 1)
+        self.con_toggle_btn = QPushButton("Show")
+        self.con_toggle_btn.setObjectName("TextBtn")
+        self.con_toggle_btn.clicked.connect(self.toggle_merger_console)
+        con_hdr.addWidget(self.con_toggle_btn)
+        lc_layout.addLayout(con_hdr)
+        self._log_lines = []
+        self.log_preview = QLabel("Ready — latest 2 log lines will appear here.")
+        self.log_preview.setObjectName("TileSub")
+        self.log_preview.setWordWrap(True)
+        self.log_preview.setStyleSheet("font-family: monospace; font-size: 11px; padding: 4px 2px;")
+        lc_layout.addWidget(self.log_preview)
         self.log_box = QTextEdit()
         self.log_box.setObjectName("LogBox")
         self.log_box.setReadOnly(True)
-        self.log_box.setMinimumHeight(280)
+        self.log_box.setMinimumHeight(260)
+        self.log_box.hide()
         configure_smooth_scroll(self.log_box)
         lc_layout.addWidget(self.log_box, 1)
-        root.addWidget(log_card, 1)
+        root.addWidget(log_card)
 
         scroll_merge.setWidget(merge_content)
         configure_smooth_scroll(scroll_merge)
@@ -2924,19 +3471,163 @@ class DumperGUI(QWidget):
         configure_smooth_scroll(scroll_watch)
         self.pages.addWidget(scroll_watch)
 
+        # ================= TAB 3: FLASHER (USB-OTG FASTBOOT FLASHER) =================
+        scroll_flash = QScrollArea()
+        scroll_flash.setWidgetResizable(True)
+        scroll_flash.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        flash_content = QWidget()
+        fl = QVBoxLayout(flash_content)
+        fl.setContentsMargins(14, 4, 14, 14)
+        fl.setSpacing(12)
+
+        dev_card = QFrame()
+        dev_card.setObjectName("Card")
+        dcl = QVBoxLayout(dev_card)
+        dcl.setContentsMargins(14, 12, 14, 12)
+        dcl.setSpacing(8)
+        dh = QHBoxLayout()
+        dlbl = QLabel("USB-OTG Fastboot Flasher")
+        dlbl.setObjectName("SectionLabel")
+        dh.addWidget(dlbl, 1)
+        self.fb_refresh_btn = QPushButton("Refresh USB")
+        self.fb_refresh_btn.clicked.connect(self.refresh_fastboot_device)
+        dh.addWidget(self.fb_refresh_btn)
+        dcl.addLayout(dh)
+        self.fb_dev_lbl = QLabel("Connect target device in Fastboot mode via USB-C OTG and tap Refresh USB.")
+        self.fb_dev_lbl.setObjectName("TileSub")
+        self.fb_dev_lbl.setWordWrap(True)
+        dcl.addWidget(self.fb_dev_lbl)
+        fl.addWidget(dev_card)
+
+        src_card = QFrame()
+        src_card.setObjectName("Card")
+        scl = QVBoxLayout(src_card)
+        scl.setContentsMargins(14, 12, 14, 12)
+        scl.setSpacing(8)
+        slbl = QLabel("Firmware Source (ZIP / Folder / .img)")
+        slbl.setObjectName("SectionLabel")
+        scl.addWidget(slbl)
+        self.fb_src_path = ""
+        self.fb_src_lbl = QLabel("No firmware selected")
+        self.fb_src_lbl.setObjectName("TileSub")
+        self.fb_src_lbl.setWordWrap(True)
+        scl.addWidget(self.fb_src_lbl)
+        src_btns = QHBoxLayout()
+        src_btns.setSpacing(8)
+        b_fb_file = QPushButton("Pick ZIP / .img")
+        b_fb_file.clicked.connect(self.pick_fastboot_file)
+        b_fb_dir = QPushButton("Pick Image Folder")
+        b_fb_dir.clicked.connect(self.pick_fastboot_folder)
+        src_btns.addWidget(b_fb_file, 1)
+        src_btns.addWidget(b_fb_dir, 1)
+        scl.addLayout(src_btns)
+        fl.addWidget(src_card)
+
+        fopt_card = QFrame()
+        fopt_card.setObjectName("Card")
+        fol = QVBoxLayout(fopt_card)
+        fol.setContentsMargins(14, 12, 14, 12)
+        fol.setSpacing(10)
+
+        r_ver = QHBoxLayout()
+        vt = QLabel("Disable Verity / Verification (vbmeta)")
+        vt.setObjectName("TileTitle")
+        r_ver.addWidget(vt, 1)
+        self.fb_verity_sw = M3Switch(self.tokens)
+        r_ver.addWidget(self.fb_verity_sw)
+        fol.addLayout(r_ver)
+
+        r_slots = QHBoxLayout()
+        st_l = QLabel("Flash Both Slots (_a & _b)")
+        st_l.setObjectName("TileTitle")
+        r_slots.addWidget(st_l, 1)
+        self.fb_slots_sw = M3Switch(self.tokens)
+        self.fb_slots_sw.setChecked(True)
+        r_slots.addWidget(self.fb_slots_sw)
+        fol.addLayout(r_slots)
+
+        r_wipe = QHBoxLayout()
+        wt = QLabel("Wipe Data (Erase userdata/metadata)")
+        wt.setObjectName("TileTitle")
+        r_wipe.addWidget(wt, 1)
+        self.fb_wipe_sw = M3Switch(self.tokens)
+        r_wipe.addWidget(self.fb_wipe_sw)
+        fol.addLayout(r_wipe)
+
+        r_reb = QHBoxLayout()
+        rt = QLabel("Auto-Reboot After Flash")
+        rt.setObjectName("TileTitle")
+        r_reb.addWidget(rt, 1)
+        self.fb_reboot_sw = M3Switch(self.tokens)
+        self.fb_reboot_sw.setChecked(True)
+        r_reb.addWidget(self.fb_reboot_sw)
+        fol.addLayout(r_reb)
+        fl.addWidget(fopt_card)
+
+        self.fb_flash_btn = QPushButton("Flash Connected Device")
+        self.fb_flash_btn.setObjectName("PrimaryBtn")
+        self.fb_flash_btn.clicked.connect(self.start_fastboot_flash)
+        fl.addWidget(self.fb_flash_btn)
+
+        qrow = QHBoxLayout()
+        qrow.setSpacing(8)
+        for lbl, args in (("Bootloader", ["reboot-bootloader"]), ("FastbootD", ["reboot", "fastboot"]), ("Reboot OS", ["reboot"])):
+            qb = QPushButton(lbl)
+            qb.clicked.connect(lambda _=False, a=args: self.quick_fastboot_cmd(a))
+            qrow.addWidget(qb, 1)
+        fl.addLayout(qrow)
+
+        flog_card = QFrame()
+        flog_card.setObjectName("Card")
+        flc = QVBoxLayout(flog_card)
+        flc.setContentsMargins(14, 10, 14, 12)
+        flc.setSpacing(6)
+        flh = QHBoxLayout()
+        fl_lbl = QLabel("Flasher Console")
+        fl_lbl.setObjectName("AppSubtitle")
+        flh.addWidget(fl_lbl, 1)
+        self.fb_con_toggle_btn = QPushButton("Show")
+        self.fb_con_toggle_btn.setObjectName("TextBtn")
+        self.fb_con_toggle_btn.clicked.connect(self.toggle_flasher_console)
+        flh.addWidget(self.fb_con_toggle_btn)
+        flc.addLayout(flh)
+        self._fb_log_lines = []
+        self.fb_log_preview = QLabel("Idle — latest 2 flasher log lines will appear here.")
+        self.fb_log_preview.setObjectName("TileSub")
+        self.fb_log_preview.setWordWrap(True)
+        self.fb_log_preview.setStyleSheet("font-family: monospace; font-size: 11px; padding: 4px 2px;")
+        flc.addWidget(self.fb_log_preview)
+        self.fb_log_box = QTextEdit()
+        self.fb_log_box.setObjectName("LogBox")
+        self.fb_log_box.setReadOnly(True)
+        self.fb_log_box.setMinimumHeight(220)
+        self.fb_log_box.hide()
+        flc.addWidget(self.fb_log_box)
+        fl.addWidget(flog_card)
+        fl.addStretch(1)
+
+        scroll_flash.setWidget(flash_content)
+        configure_smooth_scroll(scroll_flash)
+        self.pages.addWidget(scroll_flash)
+
         outer.addWidget(self.pages, 1)
 
         # ================= MATERIAL 3 BOTTOM NAVIGATION BAR =================
         nav_bar = QFrame()
         nav_bar.setObjectName("BottomNav")
         nav_row = QHBoxLayout(nav_bar)
-        nav_row.setContentsMargins(16, 8, 16, 18)
-        nav_row.setSpacing(12)
+        nav_row.setContentsMargins(12, 8, 12, 18)
+        nav_row.setSpacing(8)
 
         self.nav_merge_btn = QPushButton("Merger")
         self.nav_merge_btn.setObjectName("NavTab")
         self.nav_merge_btn.clicked.connect(lambda: self.switch_tab(0))
         nav_row.addWidget(self.nav_merge_btn, 1)
+
+        self.nav_flash_btn = QPushButton("Flasher")
+        self.nav_flash_btn.setObjectName("NavTab")
+        self.nav_flash_btn.clicked.connect(lambda: self.switch_tab(2))
+        nav_row.addWidget(self.nav_flash_btn, 1)
 
         self.nav_watch_btn = QPushButton("OTA Watcher")
         self.nav_watch_btn.setObjectName("NavTab")
@@ -2957,7 +3648,8 @@ class DumperGUI(QWidget):
         self.pages.setCurrentIndex(idx)
         self.nav_merge_btn.setProperty("active", "true" if idx == 0 else "false")
         self.nav_watch_btn.setProperty("active", "true" if idx == 1 else "false")
-        for b in (self.nav_merge_btn, self.nav_watch_btn):
+        self.nav_flash_btn.setProperty("active", "true" if idx == 2 else "false")
+        for b in (self.nav_merge_btn, self.nav_watch_btn, self.nav_flash_btn):
             b.style().unpolish(b)
             b.style().polish(b)
 
@@ -2976,7 +3668,8 @@ class DumperGUI(QWidget):
         self.tokens = build_m3_tokens(self.app)
         self.current_qss = render_m3_stylesheet(self.tokens)
         self.setStyleSheet(self.current_qss)
-        for sw in (self.fake_ota_switch, self.recovery_switch, self.daily_switch, self.autodl_switch, self.root_cap_switch, self.force_latest_switch):
+        self.settings_btn.set_tokens(self.tokens)
+        for sw in (self.fake_ota_switch, self.recovery_switch, self.skip_hash_switch, self.daily_switch, self.autodl_switch, self.root_cap_switch, self.force_latest_switch, self.fb_verity_sw, self.fb_slots_sw, self.fb_wipe_sw, self.fb_reboot_sw):
             sw.set_tokens(self.tokens)
         p_hex = self.tokens["primary"]
         self.sub_lbl.setText(
@@ -3077,12 +3770,138 @@ class DumperGUI(QWidget):
         if self.fake_ota_switch.isChecked():
             self.fake_ota_switch.setChecked(False)
         self.rec_sub.setText("Universal OOS/COS flasher, Non ColorOS device support is experimental")
+    def open_settings(self):
+        dlg = SettingsDialog(self, self.current_qss)
+        dlg.showMaximized()
+        dlg.exec()
+
+    def on_skip_hash_toggled(self, checked: bool):
+        if not checked:
+            return
+        ans = QMessageBox.warning(
+            self,
+            "Skip Hash Check",
+            "Only Toggle if you are certain all images are unaltered to save time",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if ans != QMessageBox.StandardButton.Ok:
+            self.skip_hash_switch.blockSignals(True)
+            self.skip_hash_switch.setChecked(False)
+            self.skip_hash_switch.blockSignals(False)
+
+    def toggle_merger_console(self):
+        vis = not self.log_box.isVisible()
+        self.log_box.setVisible(vis)
+        self.log_preview.setVisible(not vis)
+        self.con_toggle_btn.setText("Hide" if vis else "Show")
+
+    def toggle_flasher_console(self):
+        vis = not self.fb_log_box.isVisible()
+        self.fb_log_box.setVisible(vis)
+        self.fb_log_preview.setVisible(not vis)
+        self.fb_con_toggle_btn.setText("Hide" if vis else "Show")
+
+    def append_fb_log(self, text: str):
+        self.fb_log_box.moveCursor(QTextCursor.MoveOperation.End)
+        self.fb_log_box.insertPlainText(text)
+        self.fb_log_box.ensureCursorVisible()
+        for ln in text.splitlines():
+            st = ln.strip()
+            if st:
+                self._fb_log_lines.append(st)
+        if self._fb_log_lines:
+            self._fb_log_lines = self._fb_log_lines[-2:]
+            self.fb_log_preview.setText("\n".join(self._fb_log_lines))
+
+    def refresh_fastboot_device(self):
+        fb = find_fastboot()
+        if not fb:
+            self.fb_dev_lbl.setText("fastboot binary not found. Install Termux android-tools or check Updater (⟳).")
+            return
+        if not shutil.which("su"):
+            self.fb_dev_lbl.setText("Root (su) is required on host device for USB-OTG fastboot access.")
+            return
+        out = (subprocess.run(["su", "-c", f'"{fb}" devices'], capture_output=True, text=True).stdout or "").strip()
+        lines = [l for l in out.splitlines() if "fastboot" in l]
+        if not lines:
+            self.fb_dev_lbl.setText("No fastboot device detected over USB-OTG.")
+            return
+        serial = lines[0].split()[0]
+        prod = (subprocess.run(["su", "-c", f'"{fb}" getvar product 2>&1'], capture_output=True, text=True).stdout or "")
+        slot = (subprocess.run(["su", "-c", f'"{fb}" getvar current-slot 2>&1'], capture_output=True, text=True).stdout or "")
+        pm = re.search(r"product:\s*(\S+)", prod)
+        sm = re.search(r"current-slot:\s*(\S+)", slot)
+        p_txt = pm.group(1) if pm else "unknown"
+        s_txt = sm.group(1) if sm else "?"
+        self.fb_dev_lbl.setText(f"Connected: {serial}  •  Product: {p_txt}  •  Slot: {s_txt}")
+
+    def pick_fastboot_file(self):
+        dlg = MobilePathPicker(self, "Select Flashable ZIP or .img", self.current_qss, "/storage/emulated/0",
+                               dirs_only=False, ext_filter="", multi=False)
+        dlg.showMaximized()
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_paths:
+            self.fb_src_path = dlg.selected_paths[0]
+            self.fb_src_lbl.setText(self.fb_src_path)
+
+    def pick_fastboot_folder(self):
+        dlg = MobilePathPicker(self, "Select Folder With .img Files", self.current_qss, "/storage/emulated/0",
+                               dirs_only=True, multi=False)
+        dlg.showMaximized()
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_paths:
+            self.fb_src_path = dlg.selected_paths[0]
+            self.fb_src_lbl.setText(self.fb_src_path)
+
+    def quick_fastboot_cmd(self, args):
+        fb = find_fastboot()
+        if not fb or not shutil.which("su"):
+            self.append_fb_log("fastboot or root (su) not available.\n")
+            return
+        cmd_str = " ".join([f'"{fb}"'] + [f'"{a}"' for a in args])
+        self.append_fb_log(f"$ fastboot {' '.join(args)}\n")
+        res = subprocess.run(["su", "-c", cmd_str], capture_output=True, text=True)
+        self.append_fb_log((res.stdout or "") + (res.stderr or ""))
+
+    def start_fastboot_flash(self):
+        if not self.fb_src_path or not os.path.exists(self.fb_src_path):
+            QMessageBox.warning(self, "No Firmware Selected", "Pick a MergedOTAFlasher ZIP, image folder, or single .img first.")
+            return
+        msg = f"Flash {os.path.basename(self.fb_src_path)} to the USB-OTG connected device?"
+        if self.fb_wipe_sw.isChecked():
+            msg += "\n\nWARNING: Wipe Data is ENABLED — userdata will be erased!"
+        ans = QMessageBox.question(self, "Confirm Fastboot Flash", msg,
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        self.fb_flash_btn.setEnabled(False)
+        self.fb_log_box.clear()
+        self._fb_log_lines = []
+        self.fb_log_preview.setText("Starting fastboot flash...")
+        self.fb_worker = FastbootFlashWorker(
+            self.fb_src_path,
+            disable_verity=self.fb_verity_sw.isChecked(),
+            both_slots=self.fb_slots_sw.isChecked(),
+            wipe_data=self.fb_wipe_sw.isChecked(),
+            auto_reboot=self.fb_reboot_sw.isChecked(),
+            work_dir=self.work_dir,
+        )
+        self.fb_worker.log.connect(self.append_fb_log)
+        self.fb_worker.finished.connect(lambda rc: (self.fb_flash_btn.setEnabled(True), self.append_fb_log(f"\n[Exit code {rc}]\n")))
+        self.fb_worker.start()
+
     def log(self, text):
         cursor = self.log_box.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertText(text)
         self.log_box.setTextCursor(cursor)
         self.log_box.ensureCursorVisible()
+        for ln in str(text).splitlines():
+            st = ln.strip()
+            if st:
+                self._log_lines.append(st)
+        if self._log_lines:
+            self._log_lines = self._log_lines[-2:]
+            self.log_preview.setText("\n".join(self._log_lines))
 
     def add_local_files(self):
         dlg = MobilePathPicker(self, "Select OTA ZIP(s)", self.current_qss, "/storage/emulated/0",
@@ -3159,11 +3978,30 @@ class DumperGUI(QWidget):
                 self.on_recovery_toggled(True)
                 if not self.recovery_switch.isChecked():
                     return
+        for_other_dev = False
+        if use_rec and not is_dev_dump:
+            mb = QMessageBox(self)
+            mb.setWindowTitle("Target Device")
+            mb.setText("Is this flashable ZIP being compiled for this device or for another device?")
+            mb.setInformativeText(
+                "• This Device: enriches META-INF with live host device props & auto-pulls missing EDL/regional images.\n"
+                "• Another Device: builds META-INF strictly from the OTA ZIP metadata (never stamps host device props)."
+            )
+            btn_this = mb.addButton("This Device", QMessageBox.ButtonRole.AcceptRole)
+            btn_other = mb.addButton("Another Device", QMessageBox.ButtonRole.ActionRole)
+            btn_cancel = mb.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            mb.exec()
+            if mb.clickedButton() == btn_cancel:
+                return
+            for_other_dev = (mb.clickedButton() == btn_other)
+
         self.run_btn.setEnabled(False)
         self.status_chip.setText("Merging...")
         self.progress.setRange(0, 0)
         self.progress.show()
         self.log_box.clear()
+        self._log_lines = []
+        self.log_preview.setText("Starting merge...")
         self.worker = DumpWorker(
             lines,
             fake_ota=self.fake_ota_switch.isChecked(),
@@ -3171,6 +4009,8 @@ class DumperGUI(QWidget):
             recovery_mode=rec_mode,
             extra_imgs=self.hybrid_imgs,
             stock_overrides=self.stock_overrides,
+            for_other_device=for_other_dev,
+            skip_hash_check=self.skip_hash_switch.isChecked(),
             work_dir=self.work_dir,
         )
         self.worker.log.connect(self.log)
