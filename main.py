@@ -3,6 +3,7 @@ import hashlib
 import json
 import struct
 import tarfile
+import ssl
 import urllib.request
 import os
 import re
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "1.9.4"
+APP_VERSION = "1.9.5"
 APP_PUBLISHER = "JKurtz"
 APP_PACKAGE = "com.jkurtz.otafwmerger"
 REQUIRED_HYBRID_IMGS = ("my_company.img", "my_preload.img", "system_dlkm_oki.img")
@@ -2926,16 +2927,47 @@ class BinaryUpdateWorker(QThread):
     log = Signal(str)
     finished = Signal(int)
 
+    def _ssl_ctx(self):
+        # 1. Bundled Mozilla/Ubuntu CA bundle inside APK assets (APP_DIR/cacert.pem)
+        bundled_ca = os.path.join(APP_DIR, "cacert.pem")
+        if os.path.isfile(bundled_ca) and os.path.getsize(bundled_ca) > 10000:
+            try:
+                return ssl.create_default_context(cafile=bundled_ca)
+            except Exception:
+                pass
+        # 2. Load Android Conscrypt / system PEM certs directly via cadata= (avoids OpenSSL 3 capath hash mismatch)
+        pems = []
+        for cadir in ("/apex/com.android.conscrypt/cacerts", "/system/etc/security/cacerts"):
+            if os.path.isdir(cadir):
+                try:
+                    for fn in os.listdir(cadir):
+                        fp = os.path.join(cadir, fn)
+                        if not os.path.isfile(fp):
+                            continue
+                        raw = open(fp, "r", encoding="ascii", errors="ignore").read()
+                        s_idx = raw.find("-----BEGIN CERTIFICATE-----")
+                        e_idx = raw.find("-----END CERTIFICATE-----")
+                        if s_idx != -1 and e_idx != -1:
+                            pems.append(raw[s_idx:e_idx + len("-----END CERTIFICATE-----")])
+                except Exception:
+                    pass
+                if pems:
+                    break
+        if pems:
+            ctx = ssl.create_default_context()
+            ctx.load_verify_locations(cadata=chr(10).join(pems))
+            return ctx
+        return ssl.create_default_context()
+
     def _http_json(self, url: str) -> dict:
-        req = urllib.request.Request(url, headers={"User-Agent": "OTA-FW-Merger/1.9"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        req = urllib.request.Request(url, headers={"User-Agent": "OTA-FW-Merger/1.9.5"})
+        with urllib.request.urlopen(req, timeout=20, context=self._ssl_ctx()) as resp:
             return json.loads(resp.read().decode("utf-8", "replace"))
 
     def _http_download(self, url: str, dst: str):
-        req = urllib.request.Request(url, headers={"User-Agent": "OTA-FW-Merger/1.9"})
-        with urllib.request.urlopen(req, timeout=60) as resp, open(dst, "wb") as fp:
+        req = urllib.request.Request(url, headers={"User-Agent": "OTA-FW-Merger/1.9.5"})
+        with urllib.request.urlopen(req, timeout=60, context=self._ssl_ctx()) as resp, open(dst, "wb") as fp:
             shutil.copyfileobj(resp, fp, length=256 * 1024)
-
     def _install_root_bin(self, src_path: str, bin_name: str):
         rc = subprocess.run(
             ["su", "-c", f'mkdir -p "{ROOT_BIN_DIR}" && cp -f "{src_path}" "{ROOT_BIN_DIR}/{bin_name}" && chmod 755 "{ROOT_BIN_DIR}/{bin_name}"'],
