@@ -7,6 +7,8 @@ import ssl
 import urllib.request
 import os
 import re
+import shlex
+import time
 import shutil
 import subprocess
 import sys
@@ -15,13 +17,13 @@ from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QThread, QTimer, 
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPalette, QPen, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractButton, QAbstractItemView, QApplication, QComboBox, QDialog,
-    QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox,
+    QFrame, QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem, QMessageBox,
     QProgressBar, QPushButton, QScrollArea, QStyle, QStyledItemDelegate, QStackedWidget, QScroller, QScrollerProperties, QSizePolicy, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "1.9.5"
+APP_VERSION = "2.0"
 APP_PUBLISHER = "JKurtz"
 APP_PACKAGE = "com.jkurtz.otafwmerger"
 REQUIRED_HYBRID_IMGS = ("my_company.img", "my_preload.img", "system_dlkm_oki.img")
@@ -427,7 +429,7 @@ def _root_bin_exists(name: str) -> str:
         return cand
     if shutil.which("su"):
         try:
-            r = subprocess.run(["su", "-c", f'[ -x "{cand}" ] && echo 1 || echo 0'], capture_output=True, text=True, timeout=2)
+            r = subprocess.run(["su", "-c", f"[ -x {shlex.quote(cand)} ] && echo 1 || echo 0"], capture_output=True, text=True, timeout=2)
             if (r.stdout or "").strip() == "1":
                 return cand
         except Exception:
@@ -462,7 +464,7 @@ def find_fastboot() -> str:
             if os.path.isfile(cand):
                 return cand
             try:
-                r = subprocess.run(["su", "-c", f'[ -x "{cand}" ] && echo 1 || echo 0'], capture_output=True, text=True, timeout=2)
+                r = subprocess.run(["su", "-c", f"[ -x {shlex.quote(cand)} ] && echo 1 || echo 0"], capture_output=True, text=True, timeout=2)
                 if (r.stdout or "").strip() == "1":
                     return cand
             except Exception:
@@ -490,9 +492,15 @@ def getprop(key: str, default: str = "") -> str:
 
 
 def extract_model_from_tag(tag: str) -> str:
-    m = re.match(r"^([A-Za-z0-9]+)_", tag.strip())
+    cleaned = tag.strip()
+    for pfx in ("MergedOTAFlasher_", "SuperHybrid_", "RegionalHybrid_", "folder-", "device-"):
+        if cleaned.startswith(pfx):
+            cleaned = cleaned[len(pfx):]
+    m = re.match(r"^([A-Za-z0-9]+)_", cleaned)
     if m:
-        return m.group(1)
+        cand = m.group(1)
+        if cand.lower() not in ("merged", "ota", "full", "incremental", "folder", "device", "unknown"):
+            return cand
     return getprop("ro.product.model", "UNKNOWN")
 
 
@@ -1156,7 +1164,7 @@ class RequiredImagesDialog(QDialog):
                 cands.append(f"/dev/block/by-name/{part}")
                 blk = ""
                 for c in cands:
-                    chk = subprocess.run(["su", "-c", f'[ -e "{c}" ] && echo 1 || echo 0'], capture_output=True, text=True)
+                    chk = subprocess.run(["su", "-c", f"[ -e {shlex.quote(c)} ] && echo 1 || echo 0"], capture_output=True, text=True)
                     if (chk.stdout or "").strip() == "1":
                         blk = c
                         break
@@ -1167,7 +1175,7 @@ class RequiredImagesDialog(QDialog):
                 self.pull_root_btn.setText(f"Pulling {req}...")
                 QApplication.processEvents()
                 rc = subprocess.run(
-                    ["su", "-c", f'dd if="{blk}" of="{dst}" bs=4M 2>/dev/null || dd if="{blk}" of="{dst}" bs=1M'],
+                    ["su", "-c", f"dd if={shlex.quote(blk)} of={shlex.quote(dst)} bs=4M 2>/dev/null || dd if={shlex.quote(blk)} of={shlex.quote(dst)} bs=1M"],
                     capture_output=True, text=True,
                 ).returncode
                 if rc == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 0:
@@ -1214,11 +1222,11 @@ def capture_system_update_urls_root():
     if not su:
         return [], "No su binary found (Magisk / KernelSU Next root required)."
     probe = (
-        "grep -rhoE 'https?://(android\.googleapis\.com/packages/ota-api/package/[^<>[:space:]&]+|[^<>[:space:]&]*allawn[^<>[:space:]&]*\.zip[^<>[:space:]&]*)' "
+        r"grep -rhoE 'https?://(android\.googleapis\.com/packages/ota-api/package/[^<>[:space:]&]+|[^<>[:space:]&]*allawn[^<>[:space:]&]*\.zip[^<>[:space:]&]*)' "
         "/data/data/com.google.android.gms/shared_prefs/ "
         "/data/data/com.oplus.ota/shared_prefs/ "
         "/data/data/com.oneplus.opbackup/shared_prefs/ 2>/dev/null; "
-        "logcat -d 2>/dev/null | grep -oE 'https?://(android\.googleapis\.com/packages/ota-api/package/[^<>[:space:]&]+|[^<>[:space:]&]*allawn[^<>[:space:]&]*\.zip[^<>[:space:]&]*)' | tail -n 30; "
+        r"logcat -d 2>/dev/null | grep -oE 'https?://(android\.googleapis\.com/packages/ota-api/package/[^<>[:space:]&]+|[^<>[:space:]&]*allawn[^<>[:space:]&]*\.zip[^<>[:space:]&]*)' | tail -n 30; "
         "ls -1 /data/ota_package/*.zip 2>/dev/null || true"
     )
     try:
@@ -1344,6 +1352,8 @@ DEFAULT_LOGICAL_PARTITIONS = {
     "my_region", "my_stock", "my_version",
 }
 
+SAFE_PART_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
 EARLY_BOOT_PARTITIONS = [
     "boot", "dtbo", "init_boot", "modem", "recovery",
     "vbmeta", "vbmeta_system", "vbmeta_vendor", "vendor_boot",
@@ -1358,6 +1368,10 @@ DUMP_EXCLUDE_PARTITIONS = {
     "oplusreserve5", "reserve1", "reserve2", "reserve3", "reserve4",
     "expdb", "seccfg", "nvram", "nvdata", "nvcfg", "protect1", "protect2",
     "proinfo", "otp", "flashinfo", "pgpt", "sgpt", "boot_para",
+    "oplusstanvbk", "devinfo", "secdata", "uefivarstore", "spunvm",
+    "logfs", "logdump", "limits", "limits-cdsp", "apdp", "msadp",
+    "dip", "mdtp", "mdtpsecapp", "catefv", "catecontentfv", "cateloader",
+    "storsec", "storsec_bak", "conninfra_cfg", "efisp", "efuse",
 }
 
 
@@ -1573,8 +1587,8 @@ def is_regional_hybrid_zip(path: str):
 
 def build_universal_update_binary(files_dir: str = "OS_FILES_HERE", label: str = "MergedOTAFlasher") -> str:
     tpl = r"""#!/sbin/sh
-# __LABEL__ Universal ColorOS / OxygenOS Custom Recovery Flasher
-# Supports Aera & OrangeFox recoveries on any ColorOS / OxygenOS device (Snapdragon & MediaTek)
+# __LABEL__ Universal Recovery Flasher (v2.0 Hardened: lpmake-first atomic staging)
+# Supports AERA & OrangeFox recoveries with 4 pre-flight safety guards + --virtual-ab
 # Generated dynamically by OTA FW Merger (JKurtz)
 OUTFD="$2"
 ZIPFILE="$3"
@@ -1602,57 +1616,62 @@ if [ -f "$WORKDIR/META-INF/hybrid_meta.env" ]; then
 fi
 
 ui_print "**************************************************"
-ui_print "  __LABEL__ Universal ColorOS / OOS Flasher"
+ui_print "  __LABEL__ Universal Recovery Flasher (v2.0)"
 ui_print "  Image Folder   : $FILES_DIR"
 ui_print "  Metadata Source: ${META_SOURCE:-fallback}"
-[ -n "$TARGET_MODEL" ]  && ui_print "  Target Model   : $TARGET_MODEL"
-[ -n "$TARGET_DEVICE" ] && ui_print "  Target Device  : $TARGET_DEVICE"
-[ -n "$OTA_VERSION" ]   && ui_print "  Build Version  : $OTA_VERSION"
+[ -n "$TARGET_MODEL" ]    && ui_print "  Target Model   : $TARGET_MODEL"
+[ -n "$TARGET_DEVICE" ]   && ui_print "  Target Device  : $TARGET_DEVICE"
+[ -n "$TARGET_PLATFORM" ] && ui_print "  Target SoC     : $TARGET_PLATFORM"
+[ -n "$OTA_VERSION" ]     && ui_print "  Build Version  : $OTA_VERSION"
 ui_print "**************************************************"
 
-# --- GUARD 1: Pre-flight Recovery & Tool Check (Aera / OrangeFox) ---
+# --- GUARD 1: Pre-flight Recovery & Tool Check (AERA / OrangeFox) ---
 LPMAKE="$(command -v lpmake || echo /system/bin/lpmake)"
 [ ! -x "$LPMAKE" ] && [ -x "/vendor/bin/lpmake" ] && LPMAKE="/vendor/bin/lpmake"
 SIMG2IMG="$(command -v simg2img || echo /system/bin/simg2img)"
 BLOCKDEV="$(command -v blockdev || echo /system/bin/blockdev)"
 
 command -v unzip >/dev/null 2>&1 || abort "Recovery is missing unzip"
-[ -x "$BLOCKDEV" ] || abort "Recovery is missing blockdev (use Aera or OrangeFox)"
-[ -x "$LPMAKE" ]   || abort "Recovery is missing lpmake (use Aera or OrangeFox)"
-[ -x "$SIMG2IMG" ] || abort "Recovery is missing simg2img (use Aera or OrangeFox)"
+[ -x "$BLOCKDEV" ] || abort "Recovery is missing blockdev (use AERA or OrangeFox)"
+[ -x "$LPMAKE" ]   || abort "Recovery is missing lpmake (use AERA or OrangeFox)"
+[ -x "$SIMG2IMG" ] || abort "Recovery is missing simg2img (use AERA or OrangeFox)"
 
-# Device / Platform safety check:
-# - If TARGET_PLATFORM is known (built for This Device) and mismatches ro.board.platform -> hard-abort (wrong SoC).
-# - If TARGET_PLATFORM is blank (built for Another Device from OTA metadata like OP611FL1 while AERA/OrangeFox
-#   reports community codenames like infiniti) -> log a note and continue with block-size & super guards.
+# --- GUARD 2: Strict Device / SoC Platform Check (overrideable via /sdcard/superhybrid_force) ---
 if [ ! -f "/sdcard/superhybrid_force" ]; then
     CUR_DEV="$(getprop ro.product.device 2>/dev/null)"
     CUR_MOD="$(getprop ro.product.model 2>/dev/null)"
     CUR_PRD="$(getprop ro.build.product 2>/dev/null)"
     CUR_VDEV="$(getprop ro.product.vendor.device 2>/dev/null)"
     CUR_PLAT="$(getprop ro.board.platform 2>/dev/null)"
+    CUR_SOC="$(getprop ro.soc.model 2>/dev/null)"
+    CUR_HWPLAT="$(getprop ro.boot.hardware.platform 2>/dev/null)"
+    if [ -z "$TARGET_DEVICE" ] && [ -z "$TARGET_MODEL" ] && [ -z "$TARGET_PLATFORM" ] && [ -z "$TARGET_MARKET" ]; then
+        ui_print "! Unstamped ZIP: no device or SoC metadata found in META-INF."
+        ui_print "! Create /sdcard/superhybrid_force to flash an unstamped ZIP."
+        abort "Unstamped ZIP (no partitions modified)"
+    fi
     MATCHED=0
-    for c in "$CUR_DEV" "$CUR_MOD" "$CUR_PRD" "$CUR_VDEV"; do
+    T_DEV_LC="$(echo "$TARGET_DEVICE" | tr A-Z a-z)"
+    T_MOD_LC="$(echo "$TARGET_MODEL" | tr A-Z a-z)"
+    T_MKT_LC="$(echo "$TARGET_MARKET" | tr A-Z a-z)"
+    T_PLT_LC="$(echo "$TARGET_PLATFORM" | tr A-Z a-z)"
+    for c in "$CUR_DEV" "$CUR_MOD" "$CUR_PRD" "$CUR_VDEV" "$CUR_PLAT" "$CUR_SOC" "$CUR_HWPLAT"; do
         [ -z "$c" ] && continue
-        if { [ -n "$TARGET_DEVICE" ] && [ "$c" = "$TARGET_DEVICE" ]; } || \
-           { [ -n "$TARGET_MODEL" ] && [ "$c" = "$TARGET_MODEL" ]; } || \
-           { [ -n "$TARGET_MARKET" ] && [ "$c" = "$TARGET_MARKET" ]; }; then
+        c_lc="$(echo "$c" | tr A-Z a-z)"
+        if { [ -n "$T_DEV_LC" ] && [ "$c_lc" = "$T_DEV_LC" ]; } || \
+           { [ -n "$T_MOD_LC" ] && [ "$c_lc" = "$T_MOD_LC" ]; } || \
+           { [ -n "$T_MKT_LC" ] && [ "$c_lc" = "$T_MKT_LC" ]; } || \
+           { [ -n "$T_PLT_LC" ] && [ "$c_lc" = "$T_PLT_LC" ]; }; then
+            ui_print "- Hardware verified: matched '$c'"
             MATCHED=1
             break
         fi
     done
-    if [ "$MATCHED" = "0" ] && [ -n "$TARGET_PLATFORM" ] && [ -n "$CUR_PLAT" ]; then
-        if [ "$CUR_PLAT" = "$TARGET_PLATFORM" ]; then
-            ui_print "- Platform verified: $CUR_PLAT (recovery reports $CUR_MOD / $CUR_DEV)"
-            MATCHED=1
-        else
-            ui_print "! SoC platform mismatch: phone is $CUR_MOD ($CUR_DEV / $CUR_PLAT), ZIP targets ${TARGET_MODEL:-$TARGET_DEVICE} ($TARGET_PLATFORM)."
-            ui_print "! Create /sdcard/superhybrid_force to override."
-            abort "Platform mismatch (no partitions modified)"
-        fi
-    elif [ "$MATCHED" = "0" ] && [ -n "$TARGET_DEVICE" ]; then
-        ui_print "- OTA target: $TARGET_DEVICE (recovery reports $CUR_MOD / $CUR_DEV / $CUR_PLAT)"
-        ui_print "- Cross-device build (no host SoC stamp): continuing with block-size & super guards"
+    if [ "$MATCHED" = "0" ]; then
+        ui_print "! Device/SoC mismatch: phone is $CUR_MOD ($CUR_DEV / $CUR_PLAT / $CUR_SOC)."
+        ui_print "! ZIP targets: ${TARGET_MODEL:-$TARGET_DEVICE} (${TARGET_PLATFORM:-no SoC stamp})."
+        ui_print "! Create /sdcard/superhybrid_force to override if you are sure this ZIP is for your phone."
+        abort "Device/SoC mismatch (no partitions modified)"
     fi
 fi
 
@@ -1705,45 +1724,119 @@ is_logical_part() {
 IMG_LIST="$(unzip -l "$ZIPFILE" 2>/dev/null | awk '{print $NF}' | grep -E "^${FILES_DIR}/[^/]+\.img$" | sort)"
 [ -z "$IMG_LIST" ] && abort "No ${FILES_DIR}/*.img entries found in ZIP"
 
-# --- GUARD 2 & GUARD 4: Pre-flight /sdcard free space + super completeness check BEFORE writing ---
+# Classify planned physical vs logical partitions BEFORE touching any block device
+PLANNED_PHYS=""
 PLANNED_LOGICAL=""
 for entry in $IMG_LIST; do
     fn="${entry#${FILES_DIR}/}"
     part="${fn%.img}"
     if [ "$IS_AB" = "1" ] && [ -e "/dev/block/by-name/${part}_a" ]; then
-        continue
+        PLANNED_PHYS="$PLANNED_PHYS $entry"
     elif [ -e "/dev/block/by-name/${part}" ] && [ "$part" != "super" ]; then
-        continue
+        PLANNED_PHYS="$PLANNED_PHYS $entry"
     elif is_logical_part "$part"; then
-        PLANNED_LOGICAL="$PLANNED_LOGICAL $part"
+        PLANNED_LOGICAL="$PLANNED_LOGICAL $entry"
+    else
+        ui_print "  - Will skip ${part}.img (not present on this device)"
     fi
 done
 
-if [ -n "$PLANNED_LOGICAL" ] && [ ! -f "/sdcard/superhybrid_force" ]; then
-    for core in system vendor product odm; do
-        if ! is_in_list "$core" "$PLANNED_LOGICAL"; then
-            ui_print "! Incomplete super set: missing ${core}.img in ${FILES_DIR}/"
-            ui_print "! Create /sdcard/superhybrid_force if you intentionally want a partial super."
-            abort "Super completeness guard triggered (no partitions modified)"
+# --- GUARD 3 & 4: Core super completeness + dynamic 2x logical free-space check ---
+if [ -n "$PLANNED_LOGICAL" ]; then
+    [ -e "/dev/block/by-name/super" ] || abort "Logical images present, but /dev/block/by-name/super not found"
+
+    if [ ! -f "/sdcard/superhybrid_force" ]; then
+        LOG_NAMES=""
+        for entry in $PLANNED_LOGICAL; do
+            fn="${entry#${FILES_DIR}/}"
+            LOG_NAMES="$LOG_NAMES ${fn%.img}"
+        done
+        for core in system vendor product odm; do
+            if ! is_in_list "$core" "$LOG_NAMES"; then
+                ui_print "! Incomplete super set: missing ${core}.img in ${FILES_DIR}/"
+                ui_print "! Create /sdcard/superhybrid_force to override."
+                abort "Super completeness guard triggered (no partitions modified)"
+            fi
+        done
+    fi
+
+    # Compute exact uncompressed logical size from unzip -l (need ~2x + 1 GB for staging + super_new.img)
+    LOG_BYTES="$(unzip -l "$ZIPFILE" 2>/dev/null | awk -v dir="${FILES_DIR}/" '$NF ~ "^"dir"[^/]+\\.img$" {sum += $1} END {printf "%.0f", sum}')"
+    FREE_KB="$(df -k /sdcard 2>/dev/null | awk 'NR==2{print $4}')"
+    if [ -n "$FREE_KB" ] && [ "$FREE_KB" -gt 0 ] 2>/dev/null; then
+        REQ_KB=12582912
+        if [ -n "$LOG_BYTES" ] && [ "$LOG_BYTES" -gt 0 ] 2>/dev/null; then
+            REQ_KB=$(( (LOG_BYTES / 1024) * 2 + 1048576 ))
+        fi
+        if [ "$FREE_KB" -lt "$REQ_KB" ]; then
+            FREE_GB=$((FREE_KB / 1048576))
+            REQ_GB=$(( (REQ_KB + 1048575) / 1048576 ))
+            abort "Not enough free space on /sdcard (${FREE_GB} GB free; need ~${REQ_GB} GB for staging + super_new.img)"
+        fi
+    fi
+
+    # --- PHASE 1 (NON-DESTRUCTIVE): Stage logical images & run lpmake BEFORE flashing any physical partition ---
+    ui_print "- Phase 1/2: Staging logical images and building super_new.img..."
+    SUPER_SIZE="$("$BLOCKDEV" --getsize64 /dev/block/by-name/super 2>/dev/null)"
+    [ -n "$SUPER_SIZE" ] && [ "$SUPER_SIZE" -gt 0 ] || abort "Could not read super partition size"
+
+    GROUP_BASE=""
+    if command -v lpdump >/dev/null 2>&1; then
+        GROUP_BASE="$(lpdump /dev/block/by-name/super 2>/dev/null | awk '/Name:/{g=$2} /Maximum size:/{if (g != "default") {sub(/_a$|_b$/,"",g); print g; exit}}')"
+    fi
+    [ -z "$GROUP_BASE" ] && [ -n "$META_GROUP_NAME" ] && GROUP_BASE="$META_GROUP_NAME"
+    if [ -z "$GROUP_BASE" ]; then
+        HW="$(getprop ro.hardware 2>/dev/null)"
+        if [ -e "/dev/block/by-name/lk_a" ] || echo "$HW" | grep -qi "^mt"; then
+            GROUP_BASE="main"
+        elif echo "$HW" | grep -qiE "^(gs|zuma|komodo|caiman|tokay|shiba|husky|panther|cheetah|oriole|raven|tensor)"; then
+            GROUP_BASE="google_dynamic_partitions"
+        else
+            GROUP_BASE="qti_dynamic_partitions"
+        fi
+    fi
+
+    GROUP_MAX=$((SUPER_SIZE - 4194304))
+    LP_ARGS="--metadata-size 65536 --super-name super --metadata-slots 3 --device super:${SUPER_SIZE} --sparse"
+    if [ "$IS_AB" = "1" ]; then
+        LP_ARGS="$LP_ARGS --virtual-ab --group ${GROUP_BASE}_a:${GROUP_MAX} --group ${GROUP_BASE}_b:${GROUP_MAX}"
+    else
+        LP_ARGS="$LP_ARGS --group ${GROUP_BASE}:${GROUP_MAX}"
+    fi
+
+    for entry in $PLANNED_LOGICAL; do
+        fn="${entry#${FILES_DIR}/}"
+        p="${fn%.img}"
+        img="$STAGE_DIR/$fn"
+        ui_print "  + Staging ${fn}..."
+        unzip -p "$ZIPFILE" "$entry" > "$img" || abort "Failed extracting $entry (no partitions modified)"
+        magic="$(dd if="$img" bs=4 count=1 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')"
+        if [ "$magic" = "3aff26ed" ]; then
+            "$SIMG2IMG" "$img" "${img}.raw" || abort "simg2img failed on ${fn} (no partitions modified)"
+            mv -f "${img}.raw" "$img"
+        fi
+        sz="$(wc -c < "$img" | tr -d ' ')"
+        if [ "$IS_AB" = "1" ]; then
+            LP_ARGS="$LP_ARGS --partition ${p}_a:readonly:${sz}:${GROUP_BASE}_a --image ${p}_a=${img}"
+            LP_ARGS="$LP_ARGS --partition ${p}_b:readonly:0:${GROUP_BASE}_b"
+        else
+            LP_ARGS="$LP_ARGS --partition ${p}:readonly:${sz}:${GROUP_BASE} --image ${p}=${img}"
         fi
     done
 
-    FREE_KB="$(df -k /sdcard 2>/dev/null | awk 'NR==2{print $4}')"
-    if [ -n "$FREE_KB" ] && [ "$FREE_KB" -gt 0 ] 2>/dev/null; then
-        if [ "$FREE_KB" -lt 12582912 ]; then
-            FREE_GB=$((FREE_KB / 1048576))
-            abort "Not enough free space on /sdcard (${FREE_GB} GB free; need >= 12 GB for super repack)"
-        fi
-    fi
+    ui_print "- Running lpmake (${SUPER_SIZE} B, group: ${GROUP_BASE})..."
+    # shellcheck disable=SC2086
+    "$LPMAKE" $LP_ARGS --output /sdcard/super_new.img || abort "lpmake failed (no partitions modified!)"
+    rm -rf "$STAGE_DIR" 2>/dev/null
+    ui_print "- super_new.img built cleanly! Starting block writes..."
 fi
 
-# Set active slot A after pre-flight guards pass
+# --- PHASE 2 (BLOCK WRITES): Only runs after super_new.img succeeded ---
 if [ "$IS_AB" = "1" ] && command -v bootctl >/dev/null 2>&1; then
     bootctl set-active-boot-slot 0 >/dev/null 2>&1 || true
     ui_print "- Active slot set to A"
 fi
 
-# --- GUARD 3: Per-partition block-size bounds check before writing any physical image ---
 flash_block_img() {
     img="$1"
     blk="$2"
@@ -1763,96 +1856,29 @@ flash_block_img() {
 }
 
 FLASHED_PHYS=0
-STAGED_LOGICAL=""
-
-ui_print "- Scanning and flashing physical partitions..."
-for entry in $IMG_LIST; do
+ui_print "- Phase 2/2: Flashing physical partitions..."
+for entry in $PLANNED_PHYS; do
     fn="${entry#${FILES_DIR}/}"
     part="${fn%.img}"
-
+    tmp_img="$WORKDIR/$fn"
+    unzip -p "$ZIPFILE" "$entry" > "$tmp_img" || abort "Failed extracting $entry"
     if [ "$IS_AB" = "1" ] && [ -e "/dev/block/by-name/${part}_a" ]; then
-        tmp_img="$WORKDIR/$fn"
-        unzip -p "$ZIPFILE" "$entry" > "$tmp_img" || abort "Failed extracting $entry"
         ui_print "  * Flashing ${part}_a..."
         flash_block_img "$tmp_img" "/dev/block/by-name/${part}_a" || abort "Failed flashing ${part}_a"
         if [ -e "/dev/block/by-name/${part}_b" ]; then
             ui_print "  * Flashing ${part}_b..."
             flash_block_img "$tmp_img" "/dev/block/by-name/${part}_b" || abort "Failed flashing ${part}_b"
         fi
-        rm -f "$tmp_img"
-        FLASHED_PHYS=$((FLASHED_PHYS + 1))
-    elif [ -e "/dev/block/by-name/${part}" ] && [ "$part" != "super" ]; then
-        tmp_img="$WORKDIR/$fn"
-        unzip -p "$ZIPFILE" "$entry" > "$tmp_img" || abort "Failed extracting $entry"
+    else
         ui_print "  * Flashing ${part}..."
         flash_block_img "$tmp_img" "/dev/block/by-name/${part}" || abort "Failed flashing ${part}"
-        rm -f "$tmp_img"
-        FLASHED_PHYS=$((FLASHED_PHYS + 1))
-    elif is_logical_part "$part"; then
-        ui_print "  + Staging logical partition: ${part}.img"
-        unzip -p "$ZIPFILE" "$entry" > "$STAGE_DIR/$fn" || abort "Failed extracting $entry"
-        STAGED_LOGICAL="$STAGED_LOGICAL $part"
-    else
-        ui_print "  - Skipping ${part}.img (not present on this device)"
     fi
+    rm -f "$tmp_img"
+    FLASHED_PHYS=$((FLASHED_PHYS + 1))
 done
-
 ui_print "- Flashed $FLASHED_PHYS physical partition(s)."
 
-# Dynamic super repacking with --virtual-ab
-if [ -n "$STAGED_LOGICAL" ]; then
-    [ -e "/dev/block/by-name/super" ] || abort "Logical images staged, but /dev/block/by-name/super not found"
-
-    SUPER_SIZE="$("$BLOCKDEV" --getsize64 /dev/block/by-name/super 2>/dev/null)"
-    [ -n "$SUPER_SIZE" ] && [ "$SUPER_SIZE" -gt 0 ] || abort "Could not read super partition size"
-
-    GROUP_BASE=""
-    if command -v lpdump >/dev/null 2>&1; then
-        GROUP_BASE="$(lpdump /dev/block/by-name/super 2>/dev/null | awk '/Name:/{g=$2} /Maximum size:/{if (g != "default") {sub(/_a$|_b$/,"",g); print g; exit}}')"
-    fi
-    if [ -z "$GROUP_BASE" ] && [ -n "$META_GROUP_NAME" ]; then
-        GROUP_BASE="$META_GROUP_NAME"
-    fi
-    if [ -z "$GROUP_BASE" ]; then
-        HW="$(getprop ro.hardware 2>/dev/null)"
-        if [ -e "/dev/block/by-name/lk_a" ] || echo "$HW" | grep -qi "^mt"; then
-            GROUP_BASE="main"
-        elif echo "$HW" | grep -qiE "^(gs|zuma|komodo|caiman|tokay|shiba|husky|panther|cheetah|oriole|raven|tensor)"; then
-            GROUP_BASE="google_dynamic_partitions"
-        else
-            GROUP_BASE="qti_dynamic_partitions"
-        fi
-    fi
-
-    GROUP_MAX=$((SUPER_SIZE - 4194304))
-    ui_print "- Repacking super (${SUPER_SIZE} bytes, group: ${GROUP_BASE})..."
-
-    LP_ARGS="--metadata-size 65536 --super-name super --metadata-slots 3 --device super:${SUPER_SIZE} --sparse"
-    if [ "$IS_AB" = "1" ]; then
-        LP_ARGS="$LP_ARGS --virtual-ab --group ${GROUP_BASE}_a:${GROUP_MAX} --group ${GROUP_BASE}_b:${GROUP_MAX}"
-    else
-        LP_ARGS="$LP_ARGS --group ${GROUP_BASE}:${GROUP_MAX}"
-    fi
-
-    for p in $STAGED_LOGICAL; do
-        img="$STAGE_DIR/${p}.img"
-        magic="$(dd if="$img" bs=4 count=1 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')"
-        if [ "$magic" = "3aff26ed" ]; then
-            "$SIMG2IMG" "$img" "${img}.raw" || abort "simg2img failed on ${p}.img"
-            mv -f "${img}.raw" "$img"
-        fi
-        sz="$(wc -c < "$img" | tr -d ' ')"
-        if [ "$IS_AB" = "1" ]; then
-            LP_ARGS="$LP_ARGS --partition ${p}_a:readonly:${sz}:${GROUP_BASE}_a --image ${p}_a=${img}"
-            LP_ARGS="$LP_ARGS --partition ${p}_b:readonly:0:${GROUP_BASE}_b"
-        else
-            LP_ARGS="$LP_ARGS --partition ${p}:readonly:${sz}:${GROUP_BASE} --image ${p}=${img}"
-        fi
-    done
-
-    # shellcheck disable=SC2086
-    "$LPMAKE" $LP_ARGS --output /sdcard/super_new.img || abort "lpmake failed (check free space on /sdcard)"
-
+if [ -f "/sdcard/super_new.img" ]; then
     ui_print "- Flashing super_new.img -> /dev/block/by-name/super..."
     "$SIMG2IMG" /sdcard/super_new.img /dev/block/by-name/super || abort "Failed flashing super"
     rm -f /sdcard/super_new.img
@@ -1865,7 +1891,6 @@ ui_print "**************************************************"
 exit 0
 """
     return tpl.replace("__FILES_DIR__", files_dir).replace("__LABEL__", label)
-
 
 def build_universal_fastboot_sh(phys_early, phys_other, logical_parts, meta, files_dir="OS_FILES_HERE", label="MergedOTAFlasher") -> str:
     dev = meta.get("model") or meta.get("device") or "Universal ColorOS / OxygenOS"
@@ -2070,7 +2095,7 @@ class DumpWorker(QThread):
     log = Signal(str)
     finished = Signal(int, str, str)
 
-    def __init__(self, inputs, fake_ota=False, recovery_zip=False, recovery_mode="super", extra_imgs=None, stock_overrides=None, for_other_device=False, skip_hash_check=False, work_dir=None):
+    def __init__(self, inputs, fake_ota=False, recovery_zip=False, recovery_mode="super", extra_imgs=None, stock_overrides=None, for_other_device=False, skip_hash_check=False, target_plat_override="", work_dir=None):
         super().__init__()
         self.inputs = inputs
         self.fake_ota = fake_ota
@@ -2078,6 +2103,7 @@ class DumpWorker(QThread):
         self.recovery_mode = recovery_mode or 'regional'
         self.stock_overrides = dict(stock_overrides or {})
         self.for_other_device = bool(for_other_device)
+        self.target_plat_override = (target_plat_override or '').strip()
         self.skip_hash_check = bool(skip_hash_check)
         self.last_expected_hashes = {}
         self.ota_meta = {'source': 'fallback', 'device': '', 'model': '', 'fingerprint': '', 'ota_version': '', 'ota_type': 'AB', 'super_group': '', 'logical_partitions': []}
@@ -2099,7 +2125,7 @@ class DumpWorker(QThread):
             joined = "".join(out_lines)
             if "CANNOT LINK EXECUTABLE" in joined or "not found" in joined or rc in (126, 127):
                 self.log.emit("Retrying via su...\n")
-                su_cmd = ["su", "-c", " ".join(f'"{c}"' for c in cmd)]
+                su_cmd = ["su", "-c", " ".join(shlex.quote(str(c)) for c in cmd)]
                 proc2 = subprocess.Popen(
                     su_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     cwd=cwd or self.work_dir, text=True,
@@ -2121,7 +2147,7 @@ class DumpWorker(QThread):
                 "--summary-interval=5", "--retry-wait=10",
                 "--timeout=60", "--connect-timeout=60",
                 "--max-tries=0", "--lowest-speed-limit=1K",
-                "--check-certificate=false",
+                *(["--ca-certificate=" + os.path.join(APP_DIR, "cacert.pem")] if os.path.isfile(os.path.join(APP_DIR, "cacert.pem")) else []),
                 src, "-d", os.path.dirname(out_path), "-o", os.path.basename(out_path),
             ])
         else:
@@ -2383,7 +2409,7 @@ class DumpWorker(QThread):
                 blk = targets[part]
                 self.log.emit(f"  + Dumping {part} <- {blk}\n")
                 rc = subprocess.run(
-                    ["su", "-c", f'dd if="{blk}" of="{dst}" bs=4M 2>/dev/null || dd if="{blk}" of="{dst}" bs=1M'],
+                    ["su", "-c", f"dd if={shlex.quote(blk)} of={shlex.quote(dst)} bs=4M 2>/dev/null || dd if={shlex.quote(blk)} of={shlex.quote(dst)} bs=1M"],
                     capture_output=True, text=True,
                 ).returncode
                 if rc == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 0:
@@ -2462,6 +2488,9 @@ class DumpWorker(QThread):
             self._probe_device_meta_root()
         else:
             self.log.emit("Target = Another Device: building META-INF strictly from OTA ZIP metadata (skipping host props).\n")
+            if self.target_plat_override:
+                self.ota_meta["platform"] = self.target_plat_override
+                self.log.emit(f"  * Stamped target SoC/codename: {self.target_plat_override}\n")
 
         is_regional = (mode == "regional")
         files_dir = "OOS_FILES_HERE" if is_regional else "OS_FILES_HERE"
@@ -2489,10 +2518,10 @@ class DumpWorker(QThread):
                     f"/dev/block/mapper/{part}", f"/dev/block/by-name/{part}"
                 ]
                 for blk in cands:
-                    if self._su_read(f'[ -e "{blk}" ] && echo 1 || echo 0') == "1":
+                    if self._su_read(f"[ -e {shlex.quote(blk)} ] && echo 1 || echo 0") == "1":
                         dst = os.path.join(ota_dir, dlkm_fn)
                         rc = subprocess.run(
-                            ["su", "-c", f'dd if="{blk}" of="{dst}" bs=4M 2>/dev/null || dd if="{blk}" of="{dst}" bs=1M'],
+                            ["su", "-c", f"dd if={shlex.quote(blk)} of={shlex.quote(dst)} bs=4M 2>/dev/null || dd if={shlex.quote(blk)} of={shlex.quote(dst)} bs=1M"],
                             capture_output=True, text=True,
                         ).returncode
                         if rc == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 0:
@@ -2670,30 +2699,10 @@ class DumpWorker(QThread):
                             self.ota_meta[mk] = inc_m[mk]
                     if ota_ver:
                         self.ota_meta["ota_version"] = ota_ver
-                    inc_m = extract_ota_zip_metadata(zf)
-                    for mk in ("device", "fingerprint", "ota_version", "super_group", "logical_partitions"):
-                        if inc_m.get(mk) and not self.ota_meta.get(mk):
-                            self.ota_meta[mk] = inc_m[mk]
-                    if ota_ver:
-                        self.ota_meta["ota_version"] = ota_ver
-                    inc_m = extract_ota_zip_metadata(zf)
-                    for mk in ("device", "fingerprint", "ota_version", "super_group", "logical_partitions"):
-                        if inc_m.get(mk) and not self.ota_meta.get(mk):
-                            self.ota_meta[mk] = inc_m[mk]
-                    if ota_ver:
-                        self.ota_meta["ota_version"] = ota_ver
-                    inc_m = extract_ota_zip_metadata(zf)
-                    for mk in ("device", "fingerprint", "ota_version", "super_group", "logical_partitions"):
-                        if inc_m.get(mk) and not self.ota_meta.get(mk):
-                            self.ota_meta[mk] = inc_m[mk]
-                    if ota_ver:
-                        self.ota_meta["ota_version"] = ota_ver
-                    inc_m = extract_ota_zip_metadata(zf)
-                    for mk in ("device", "fingerprint", "ota_version", "super_group", "logical_partitions"):
-                        if inc_m.get(mk) and not self.ota_meta.get(mk):
-                            self.ota_meta[mk] = inc_m[mk]
-                    if ota_ver:
-                        self.ota_meta["ota_version"] = ota_ver
+
+
+
+
                     for member in zf.namelist():
                         if member in ("payload.bin", "payload_properties.txt") or member.startswith("META-INF/"):
                             zf.extract(member, wd)
@@ -2751,9 +2760,11 @@ class DumpWorker(QThread):
                 shutil.rmtree(os.path.join(out_dir, "META-INF"), ignore_errors=True)
                 if os.path.isdir(meta_dir):
                     shutil.move(meta_dir, os.path.join(out_dir, "META-INF"))
-                props_src = os.path.join(wd, "payload_properties.txt")
+                props_src = os.path.join(repack_out, "payload_properties.txt")
+                if not os.path.isfile(props_src):
+                    props_src = os.path.join(wd, "payload_properties.txt")
                 if os.path.isfile(props_src):
-                    shutil.move(props_src, os.path.join(out_dir, "payload_properties.txt"))
+                    shutil.copy2(props_src, os.path.join(out_dir, "payload_properties.txt"))
                 zip_path = os.path.join(out_dir, f"{safe_name}.zip")
                 with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
                     for item in ("payload.bin", "payload_properties.txt"):
@@ -2802,7 +2813,7 @@ class FastbootFlashWorker(QThread):
         self.work_dir = work_dir or get_work_dir()
 
     def _fb(self, fb_bin: str, args: list, ignore_err=False):
-        cmd_str = " ".join([f'"{fb_bin}"'] + [f'"{a}"' for a in args])
+        cmd_str = " ".join([shlex.quote(fb_bin)] + [shlex.quote(str(a)) for a in args])
         self.log.emit(f"$ fastboot {' '.join(args)}\n")
         proc = subprocess.Popen(["su", "-c", cmd_str], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for line in proc.stdout:
@@ -2847,6 +2858,9 @@ class FastbootFlashWorker(QThread):
                         if info.is_dir() or not info.filename.lower().endswith(".img"):
                             continue
                         bn = os.path.basename(info.filename.replace("\\", "/"))
+                        if not SAFE_PART_RE.match(bn):
+                            self.log.emit(f"  ! Skipping unsafe filename in ZIP: {bn}\n")
+                            continue
                         dst = os.path.join(tmp_stage, bn)
                         with zf.open(info, "r") as sf, open(dst, "wb") as df:
                             shutil.copyfileobj(sf, df, length=4 * 1024 * 1024)
@@ -2891,9 +2905,9 @@ class FastbootFlashWorker(QThread):
             for p in phys_other:
                 ip = os.path.join(img_dir, f"{p}.img")
                 if self.both_slots:
-                    self._fb(fb, ["flash", "--slot=all", p, ip], ignore_err=True)
+                    self._fb(fb, ["flash", "--slot=all", p, ip])
                 else:
-                    self._fb(fb, ["flash", p, ip], ignore_err=True)
+                    self._fb(fb, ["flash", p, ip])
 
             if logical_parts and not has_super:
                 for p in logical_parts:
@@ -2969,8 +2983,14 @@ class BinaryUpdateWorker(QThread):
         with urllib.request.urlopen(req, timeout=60, context=self._ssl_ctx()) as resp, open(dst, "wb") as fp:
             shutil.copyfileobj(resp, fp, length=256 * 1024)
     def _install_root_bin(self, src_path: str, bin_name: str):
+        if not SAFE_PART_RE.match(bin_name):
+            raise RuntimeError(f"Unsafe binary name: {bin_name}")
+        with open(src_path, "rb") as fh:
+            hdr = fh.read(20)
+        if not (hdr[:4] == b"\x7fELF" and hdr[4] == 2 and hdr[18:20] == b"\xb7\x00"):
+            raise RuntimeError(f"Downloaded {bin_name} is not a valid aarch64 ELF binary — aborting install")
         rc = subprocess.run(
-            ["su", "-c", f'mkdir -p "{ROOT_BIN_DIR}" && cp -f "{src_path}" "{ROOT_BIN_DIR}/{bin_name}" && chmod 755 "{ROOT_BIN_DIR}/{bin_name}"'],
+            ["su", "-c", f"mkdir -p {shlex.quote(ROOT_BIN_DIR)} && cp -f {shlex.quote(src_path)} {shlex.quote(ROOT_BIN_DIR + '/' + bin_name)} && chmod 755 {shlex.quote(ROOT_BIN_DIR + '/' + bin_name)}"],
             capture_output=True, text=True,
         ).returncode
         if rc != 0:
@@ -3015,7 +3035,7 @@ class BinaryUpdateWorker(QThread):
                         with tarfile.open(dl, "r:gz") as tf:
                             for m in tf.getmembers():
                                 if m.isfile() and "payload_dumper" in os.path.basename(m.name).lower():
-                                    tf.extract(m, tmp_dir)
+                                    tf.extract(m, tmp_dir, filter="data") if hasattr(tarfile, "data_filter") else (tf.extract(m, tmp_dir) if os.path.realpath(os.path.join(tmp_dir, m.name)).startswith(os.path.realpath(tmp_dir) + os.sep) else (_ for _ in ()).throw(RuntimeError("Unsafe tar path")))
                                     bin_src = os.path.join(tmp_dir, m.name)
                                     break
                     self._install_root_bin(bin_src, "ota_extractor")
@@ -3180,7 +3200,7 @@ class SettingsDialog(QDialog):
 
     def reset_bins(self):
         if shutil.which("su"):
-            subprocess.run(["su", "-c", f'rm -rf "{ROOT_BIN_DIR}"'], capture_output=True)
+            subprocess.run(["su", "-c", f"rm -rf {shlex.quote(ROOT_BIN_DIR)}"], capture_output=True)
             self.log_out.append("Cleared dynamic overrides — reverted to bundled APK binaries.\n")
         self._refresh_status()
 
@@ -3854,14 +3874,14 @@ class DumperGUI(QWidget):
         if not shutil.which("su"):
             self.fb_dev_lbl.setText("Root (su) is required on host device for USB-OTG fastboot access.")
             return
-        out = (subprocess.run(["su", "-c", f'"{fb}" devices'], capture_output=True, text=True).stdout or "").strip()
+        out = (subprocess.run(["su", "-c", f"{shlex.quote(fb)} devices"], capture_output=True, text=True).stdout or "").strip()
         lines = [l for l in out.splitlines() if "fastboot" in l]
         if not lines:
             self.fb_dev_lbl.setText("No fastboot device detected over USB-OTG.")
             return
         serial = lines[0].split()[0]
-        prod = (subprocess.run(["su", "-c", f'"{fb}" getvar product 2>&1'], capture_output=True, text=True).stdout or "")
-        slot = (subprocess.run(["su", "-c", f'"{fb}" getvar current-slot 2>&1'], capture_output=True, text=True).stdout or "")
+        prod = (subprocess.run(["su", "-c", f"{shlex.quote(fb)} getvar product 2>&1"], capture_output=True, text=True).stdout or "")
+        slot = (subprocess.run(["su", "-c", f"{shlex.quote(fb)} getvar current-slot 2>&1"], capture_output=True, text=True).stdout or "")
         pm = re.search(r"product:\s*(\S+)", prod)
         sm = re.search(r"current-slot:\s*(\S+)", slot)
         p_txt = pm.group(1) if pm else "unknown"
@@ -3889,7 +3909,7 @@ class DumperGUI(QWidget):
         if not fb or not shutil.which("su"):
             self.append_fb_log("fastboot or root (su) not available.\n")
             return
-        cmd_str = " ".join([f'"{fb}"'] + [f'"{a}"' for a in args])
+        cmd_str = " ".join([shlex.quote(fb)] + [shlex.quote(str(a)) for a in args])
         self.append_fb_log(f"$ fastboot {' '.join(args)}\n")
         res = subprocess.run(["su", "-c", cmd_str], capture_output=True, text=True)
         self.append_fb_log((res.stdout or "") + (res.stderr or ""))
@@ -4001,15 +4021,6 @@ class DumperGUI(QWidget):
                 self.recovery_switch.blockSignals(True)
                 self.recovery_switch.setChecked(True)
                 self.recovery_switch.blockSignals(False)
-        if False and use_rec and rec_mode == "regional" and not is_dev_dump:
-            missing = [
-                r for r in REQUIRED_HYBRID_IMGS
-                if r not in hyb_reqs and not os.path.isfile(self.hybrid_imgs.get(r, ""))
-            ]
-            if missing:
-                self.on_recovery_toggled(True)
-                if not self.recovery_switch.isChecked():
-                    return
         for_other_dev = False
         if use_rec and not is_dev_dump:
             mb = QMessageBox(self)
@@ -4026,6 +4037,16 @@ class DumperGUI(QWidget):
             if mb.clickedButton() == btn_cancel:
                 return
             for_other_dev = (mb.clickedButton() == btn_other)
+            target_plat_override = ""
+            if for_other_dev:
+                val, ok_in = QInputDialog.getText(
+                    self,
+                    "Target Device SoC / Codename (Recommended)",
+                    "Enter target device SoC platform or recovery codename (e.g. sm8850, sm8650, infiniti, dodge)\n"
+                    "so recovery can verify hardware before flashing (leave blank to require /sdcard/superhybrid_force):",
+                )
+                if ok_in and val.strip():
+                    target_plat_override = val.strip()
 
         self.run_btn.setEnabled(False)
         self.status_chip.setText("Merging...")
@@ -4042,6 +4063,7 @@ class DumperGUI(QWidget):
             extra_imgs=self.hybrid_imgs,
             stock_overrides=self.stock_overrides,
             for_other_device=for_other_dev,
+            target_plat_override=target_plat_override,
             skip_hash_check=self.skip_hash_switch.isChecked(),
             work_dir=self.work_dir,
         )

@@ -1,6 +1,6 @@
 # OTA FW Merger (Android)
 
-**Latest Release:** v1.9.5  
+**Latest Release:** v2.0  
 **Publisher:** JKurtz  
 **Platform:** Android 9+ (`arm64-v8a`)  
 **License:** GNU GPL-3.0
@@ -73,7 +73,7 @@ A standalone, self-contained Android APK built for **ColorOS** devices, with **e
 ## Installation & Obtainium Auto-Updates
 
 ### Option A — Direct Download
-1. Download the latest `OTAFWMerger-v1.9.5-JKurtz-arm64-v8a.apk` from [Releases](https://github.com/JKurtz97/OTA-FW-Merger-Android/releases) and install it. *(Signed with a debug key — tap **Install anyway** if Play Protect prompts.)*
+1. Download the latest `OTAFWMerger-v2.0-JKurtz-arm64-v8a.apk` from [Releases](https://github.com/JKurtz97/OTA-FW-Merger-Android/releases) and install it. *(Signed with a debug key — tap **Install anyway** if Play Protect prompts.)*
 2. Grant **All files access** using one of the methods above.
 
 ### Option B — Automatic Updates via [Obtainium](https://github.com/ImranR98/Obtainium)
